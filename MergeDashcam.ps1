@@ -1231,16 +1231,11 @@ catch {
 }
 finally {
 
-    Write-Host ""
-    Write-Host "Temporary files:"
-    Write-Host $tempRoot
-    Write-Host ""
-
-    # Keep temporary files while testing.
-    #
-    # Once everything is confirmed working, change to:
-    #
-    # Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    Remove-Item `
+        -LiteralPath $tempRoot `
+        -Recurse `
+        -Force `
+        -ErrorAction SilentlyContinue
 
     pause
 }
