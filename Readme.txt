@@ -14,16 +14,16 @@ Features
 
 - Internally sorts dragged files by modified date.
 - Compares overlapping frames via hash check.
-- Adds audio if exist.
+- Adds audio if it exists (default).
+- Offers the option to exclude audio.
 - Ignores missing audio.
 
 Usage
 
-- First copy files to a folder in hard drive.
-- Select and drag file(s) to .bat file.
-- Merged file will be written in SOURCE folder.
+- Select and drag file(s) to .bat file. Destination folder and audio inclusion will be asked.
+- Press Enter at the audio question to include audio.
 
-A report will be written to merge_result.txt
+A report will be written to merge_result.txt in target folder.s
 
 =================================
 Extract front and rear videos.bat

@@ -1,6 +1,8 @@
 param(
     [string]$OutputDirectory,
 
+    [switch]$ExcludeAudio,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Files
 )
@@ -812,6 +814,15 @@ try {
 # silence.
 # ========================================================
 
+if ($ExcludeAudio) {
+
+    Write-Host ""
+    Write-Host "Audio excluded by request."
+    $report.Add("")
+    $report.Add("Audio was excluded by request.")
+}
+else {
+
 Write-Host ""
 Write-Host "Preparing audio..."
 
@@ -1108,6 +1119,7 @@ else {
 
     $report.Add("")
     $report.Add("No audio segments were created.")
+}
 }
     # ========================================================
     # Final report
