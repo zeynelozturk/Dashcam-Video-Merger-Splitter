@@ -7,6 +7,11 @@ if "%~1"=="" (
 	exit /b
 )
 
+:selectAdditionalFiles
+echo.
+set "ADDITIONAL_FILES="
+set /p "ADDITIONAL_FILES=Do you want to add additional files (like event videos)? Drag them here and press Enter, or press Enter to skip: "
+
 :selectOutputFolder
 echo.
 echo Output folder:
@@ -46,7 +51,7 @@ if not defined OUTPUT_DIRECTORY (
 goto selectAudio
 
 :runMerge
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0MergeDashcam.ps1" -OutputDirectory "%OUTPUT_DIRECTORY%" %AUDIO_ARGUMENT% %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0MergeDashcam.ps1" -OutputDirectory "%OUTPUT_DIRECTORY%" %AUDIO_ARGUMENT% %* %ADDITIONAL_FILES%
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 echo PowerShell exited with code %EXIT_CODE%
