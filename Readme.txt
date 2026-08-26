@@ -20,7 +20,7 @@ Features
 
 Usage
 
-- Select and drag file(s) to .bat file. Destination folder and audio inclusion will be asked.
+- Select and drag file(s) to .bat file. The first and last modified dates will be shown, then destination folder and audio inclusion will be asked.
 - Press Enter at the audio question to include audio.
 - You may add more files at the first prompt by dragging them into the command window, then pressing Enter. Press Enter without dragging to skip.
 

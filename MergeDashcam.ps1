@@ -329,6 +329,30 @@ param(
 return $FrameCount / [double]$FrameRate
 }
 
+function Convert-DraggedFileList {
+    param(
+        [string]$Text
+    )
+
+    $paths = New-Object System.Collections.Generic.List[string]
+    $matches = [regex]::Matches($Text, '"([^"]+)"|(\S+)')
+
+    foreach ($match in $matches) {
+        if ($match.Groups[1].Success) {
+            $path = $match.Groups[1].Value.Trim()
+        }
+        else {
+            $path = $match.Groups[2].Value.Trim()
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($path)) {
+            [void]$paths.Add($path)
+        }
+    }
+
+    return $paths.ToArray()
+}
+
 # ============================================================
 # Validate input
 # ============================================================
@@ -342,16 +366,57 @@ if ($null -eq $Files -or $Files.Count -lt 2) {
     exit
 }
 
-$Files = @(
+$initialFiles = @(
     $Files |
         ForEach-Object {
             Get-Item -LiteralPath $_
         } |
-        Sort-Object LastWriteTime |
+        Sort-Object LastWriteTime
+)
+
+Write-Host ""
+Write-Host "Initial files after sorting:"
+Write-Host (
+    "First: $($initialFiles[0].Name) - " +
+    $initialFiles[0].LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+)
+Write-Host (
+    "Last : $($initialFiles[$initialFiles.Count - 1].Name) - " +
+    $initialFiles[$initialFiles.Count - 1].LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+)
+
+$Files = @(
+    $initialFiles |
         ForEach-Object {
             $_.FullName
         }
 )
+
+$additionalText = Read-Host (
+    "Do you want to add additional files (like event videos)? " +
+    "Drag them here and press Enter, or press Enter to skip"
+)
+
+if (-not [string]::IsNullOrWhiteSpace($additionalText)) {
+
+    $additionalFiles = Convert-DraggedFileList $additionalText
+
+    $allFilePaths = @($Files) + @($additionalFiles)
+
+    $Files = @(
+        $allFilePaths |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_)
+            } |
+            ForEach-Object {
+                Get-Item -LiteralPath ([string]$_)
+            } |
+            Sort-Object LastWriteTime |
+            ForEach-Object {
+                $_.FullName
+            }
+    )
+}
 
 foreach ($file in $Files) {
 
