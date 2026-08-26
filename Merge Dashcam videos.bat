@@ -51,5 +51,5 @@ set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 echo PowerShell exited with code %EXIT_CODE%
 echo.
-pause
+if not "%EXIT_CODE%"=="0" pause
 exit /b %EXIT_CODE%
