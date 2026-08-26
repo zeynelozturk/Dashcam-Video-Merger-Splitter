@@ -467,6 +467,7 @@ $resultFile = Join-Path (
 ) ($firstName + "_merged_result.txt")
 
 $report = New-Object System.Collections.Generic.List[string]
+$mergeSucceeded = $false
 
 $report.Add("Dashcam merge result")
 $report.Add("===================")
@@ -1210,6 +1211,24 @@ else {
     Write-Host $resultFile
     Write-Host "=========================================="
     Write-Host ""
+
+    $mergeSucceeded = $true
+
+    Write-Host "Press Enter to open the target folder and select the merged video."
+    Write-Host "Press Esc to finish."
+
+    try {
+        $key = [Console]::ReadKey($true)
+
+        if ($key.Key -eq [ConsoleKey]::Enter) {
+            Start-Process `
+                -FilePath "explorer.exe" `
+                -ArgumentList "/select,`"$output`""
+        }
+    }
+    catch {
+        Write-Host "Could not open the target folder."
+    }
 }
 catch {
 
@@ -1237,5 +1256,7 @@ finally {
         -Force `
         -ErrorAction SilentlyContinue
 
-    pause
+    if (-not $mergeSucceeded) {
+        pause
+    }
 }
