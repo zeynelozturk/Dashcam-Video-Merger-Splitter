@@ -1,4 +1,6 @@
 param(
+    [string]$OutputDirectory,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Files
 )
@@ -356,6 +358,17 @@ foreach ($file in $Files) {
     }
 }
 
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Split-Path $Files[0] -Parent
+}
+else {
+    $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+
+    if (-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
+        New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    }
+}
+
 # ============================================================
 # Header
 # ============================================================
@@ -380,7 +393,7 @@ $tempRoot = Join-Path $env:TEMP (
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 
 $resultFile = Join-Path (
-    Split-Path $Files[0] -Parent
+    $OutputDirectory
 ) "merge_result.txt"
 
 $report = New-Object System.Collections.Generic.List[string]
@@ -766,8 +779,7 @@ try {
     # Create video-only merged AVI
     # ========================================================
 
-    $firstDirectory =
-        Split-Path $Files[0] -Parent
+    $firstDirectory = $OutputDirectory
 
     $firstName =
         [IO.Path]::GetFileNameWithoutExtension($Files[0])
