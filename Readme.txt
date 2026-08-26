@@ -5,11 +5,14 @@ These utilites focus on DF10 car dashcam, but it may work with others too.
 Merge Dashcam videos.bat
 =================================
 
-Sorts dashcam videos, compares overlapping frames and merges them in a single video.
+Merges multiple dashcam videos without reencoding (mostly). This is done by comparing
+overlapping frames and reencoding tiny part.
+
 The resulting video should have smooth playback without any skipping.
 
 Features
 
+- Internally sorts dragged files by modified date.
 - Compares overlapping frames via hash check.
 - Adds audio if exist.
 - Ignores missing audio.
