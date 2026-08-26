@@ -23,7 +23,7 @@ Usage
 - Select and drag file(s) to .bat file. Destination folder and audio inclusion will be asked.
 - Press Enter at the audio question to include audio.
 
-A report will be written to merge_result.txt in target folder.s
+A report will be written to a file named after the merged video in the target folder.
 
 =================================
 Extract front and rear videos.bat

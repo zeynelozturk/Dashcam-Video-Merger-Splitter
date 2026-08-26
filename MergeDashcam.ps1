@@ -394,9 +394,12 @@ $tempRoot = Join-Path $env:TEMP (
 
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 
+$firstName =
+    [IO.Path]::GetFileNameWithoutExtension($Files[0])
+
 $resultFile = Join-Path (
     $OutputDirectory
-) "merge_result.txt"
+) ($firstName + "_merged_result.txt")
 
 $report = New-Object System.Collections.Generic.List[string]
 
@@ -782,9 +785,6 @@ try {
     # ========================================================
 
     $firstDirectory = $OutputDirectory
-
-    $firstName =
-        [IO.Path]::GetFileNameWithoutExtension($Files[0])
 
     $output =
         Join-Path $firstDirectory (
