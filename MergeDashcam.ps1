@@ -1,10 +1,8 @@
 param(
-    [string]$OutputDirectory,
-
-    [switch]$ExcludeAudio,
-
     [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$Files
+    [string[]]$Files,
+
+    [switch]$ExcludeAudio
 )
 
 $ErrorActionPreference = "Stop"
