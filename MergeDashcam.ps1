@@ -51,6 +51,93 @@ function Invoke-FFprobe {
     return $result
 }
 
+$script:ProgressEnabled = $true
+
+$script:ProgressWeights = [ordered]@{
+    Setup = 5
+    AudioMetadata = 15
+    FrameHashes = 30
+    PairProcessing = 25
+    VideoFinalize = 10
+    AudioFinalize = 15
+}
+
+$script:StageProgress = @{}
+foreach ($stageName in $script:ProgressWeights.Keys) {
+    $script:StageProgress[$stageName] = 0.0
+}
+
+function Set-OverallProgress {
+    param(
+        [string]$Stage,
+        [double]$PercentComplete,
+        [string]$Status
+    )
+
+    if (-not $script:ProgressEnabled) {
+        return
+    }
+
+    if (-not $script:ProgressWeights.Contains($Stage)) {
+        return
+    }
+
+    $clamped = [Math]::Max(0.0, [Math]::Min(100.0, $PercentComplete))
+    $script:StageProgress[$Stage] = $clamped
+
+    $overall = 0.0
+    foreach ($stageName in $script:ProgressWeights.Keys) {
+        $weight = [double]$script:ProgressWeights[$stageName]
+        $stageValue = [double]$script:StageProgress[$stageName]
+        $overall += $weight * ($stageValue / 100.0)
+    }
+
+    Write-Progress `
+        -Id 1 `
+        -Activity "Dashcam merge overall progress" `
+        -Status $Status `
+        -PercentComplete ([Math]::Round($overall, 1))
+}
+
+function Set-StepProgress {
+    param(
+        [string]$Activity,
+        [string]$Status,
+        [double]$PercentComplete
+    )
+
+    if (-not $script:ProgressEnabled) {
+        return
+    }
+
+    Write-Progress `
+        -Id 2 `
+        -Activity $Activity `
+        -Status $Status `
+        -PercentComplete ([Math]::Max(0.0, [Math]::Min(100.0, $PercentComplete)))
+}
+
+function Complete-StepProgress {
+    param(
+        [string]$Activity
+    )
+
+    if (-not $script:ProgressEnabled) {
+        return
+    }
+
+    Write-Progress -Id 2 -Activity $Activity -Completed
+}
+
+function Complete-AllProgress {
+    if (-not $script:ProgressEnabled) {
+        return
+    }
+
+    Write-Progress -Id 2 -Activity "Current step" -Completed
+    Write-Progress -Id 1 -Activity "Dashcam merge overall progress" -Completed
+}
+
 function Get-VideoFrames {
     param(
         [string]$File
@@ -204,7 +291,9 @@ function Get-FileMetadataParallel {
     param(
         [string[]]$InputFiles,
         [int]$WorkerCount,
-        [string]$FfprobePath
+        [string]$FfprobePath,
+        [string]$ProgressStage = "",
+        [string]$ProgressActivity = ""
     )
 
     $files = @($InputFiles)
@@ -218,6 +307,8 @@ function Get-FileMetadataParallel {
         1,
         [Math]::Min($WorkerCount, $files.Count)
     )
+
+    $completedCount = 0
 
     $activeJobs = New-Object System.Collections.ArrayList
     $nextIndex = 0
@@ -509,6 +600,24 @@ function Get-FileMetadataParallel {
             }
 
             $results[[int]$jobResult.Index] = $jobResult.Metadata
+
+            $completedCount++
+
+            if (-not [string]::IsNullOrWhiteSpace($ProgressActivity)) {
+                $stepPercent = 100.0 * $completedCount / $files.Count
+
+                Set-StepProgress `
+                    -Activity $ProgressActivity `
+                    -Status "$completedCount/$($files.Count) files" `
+                    -PercentComplete $stepPercent
+
+                if (-not [string]::IsNullOrWhiteSpace($ProgressStage)) {
+                    Set-OverallProgress `
+                        -Stage $ProgressStage `
+                        -PercentComplete $stepPercent `
+                        -Status "Audio metadata: $completedCount/$($files.Count)"
+                }
+            }
         }
     }
     finally {
@@ -578,7 +687,9 @@ function Get-FrameHashesParallel {
     param(
         [string[]]$InputFiles,
         [int]$WorkerCount,
-        [string]$FfmpegPath
+        [string]$FfmpegPath,
+        [string]$ProgressStage = "",
+        [string]$ProgressActivity = ""
     )
 
     $files = @($InputFiles)
@@ -592,6 +703,8 @@ function Get-FrameHashesParallel {
         1,
         [Math]::Min($WorkerCount, $files.Count)
     )
+
+    $completedCount = 0
 
     $activeJobs = New-Object System.Collections.ArrayList
     $nextIndex = 0
@@ -719,6 +832,24 @@ function Get-FrameHashesParallel {
             }
 
             $results[[int]$jobResult.Index] = @($jobResult.Hashes)
+
+            $completedCount++
+
+            if (-not [string]::IsNullOrWhiteSpace($ProgressActivity)) {
+                $stepPercent = 100.0 * $completedCount / $files.Count
+
+                Set-StepProgress `
+                    -Activity $ProgressActivity `
+                    -Status "$completedCount/$($files.Count) files" `
+                    -PercentComplete $stepPercent
+
+                if (-not [string]::IsNullOrWhiteSpace($ProgressStage)) {
+                    Set-OverallProgress `
+                        -Stage $ProgressStage `
+                        -PercentComplete $stepPercent `
+                        -Status "Frame hashes: $completedCount/$($files.Count)"
+                }
+            }
         }
     }
     finally {
@@ -1151,6 +1282,11 @@ $OutputDirectory = Select-OutputDirectory (
     Split-Path $Files[0] -Parent
 )
 
+Set-OverallProgress `
+    -Stage "Setup" `
+    -PercentComplete 100 `
+    -Status "Setup complete"
+
 # ============================================================
 # Header
 # ============================================================
@@ -1196,6 +1332,11 @@ $report.Add("")
 
 try {
 
+    Set-StepProgress `
+        -Activity "Starting merge" `
+        -Status "Preparing stages" `
+        -PercentComplete 0
+
     $fileMetadataCache = @{}
     $overlapCache = @{}
 
@@ -1223,7 +1364,9 @@ try {
             $parallelAudioMetadata = Get-FileMetadataParallel `
                 -InputFiles $Files `
                 -WorkerCount $ParallelAudioMetadataWorkers `
-                -FfprobePath $ffprobe
+                -FfprobePath $ffprobe `
+                -ProgressStage "AudioMetadata" `
+                -ProgressActivity "Detecting audio metadata"
 
             for ($i = 0; $i -lt $Files.Count; $i++) {
                 $metadataCacheKey = [IO.Path]::GetFullPath($Files[$i])
@@ -1244,6 +1387,19 @@ try {
             )
         }
     }
+
+    $audioProcessedCount = 0
+    $audioTotalCount = [Math]::Max(1, $Files.Count)
+
+    Set-StepProgress `
+        -Activity "Detecting audio metadata" `
+        -Status "0/$audioTotalCount files" `
+        -PercentComplete 0
+
+    Set-OverallProgress `
+        -Stage "AudioMetadata" `
+        -PercentComplete 0 `
+        -Status "Audio metadata: 0/$audioTotalCount"
 
     foreach ($file in $Files) {
 
@@ -1278,7 +1434,22 @@ try {
                 "Audio: NO   $([IO.Path]::GetFileName($file))"
             )
         }
+
+        $audioProcessedCount++
+        $audioPercent = 100.0 * $audioProcessedCount / $audioTotalCount
+
+        Set-StepProgress `
+            -Activity "Detecting audio metadata" `
+            -Status "$audioProcessedCount/$audioTotalCount files" `
+            -PercentComplete $audioPercent
+
+        Set-OverallProgress `
+            -Stage "AudioMetadata" `
+            -PercentComplete $audioPercent `
+            -Status "Audio metadata: $audioProcessedCount/$audioTotalCount"
     }
+
+    Complete-StepProgress -Activity "Detecting audio metadata"
 
     # ========================================================
     # Generate frame hashes
@@ -1303,7 +1474,9 @@ try {
             $parallelHashes = Get-FrameHashesParallel `
                 -InputFiles $Files `
                 -WorkerCount $ParallelFrameHashWorkers `
-                -FfmpegPath $ffmpeg
+                -FfmpegPath $ffmpeg `
+                -ProgressStage "FrameHashes" `
+                -ProgressActivity "Generating frame hashes"
 
             for ($i = 0; $i -lt $Files.Count; $i++) {
                 $hashes[$i] = @($parallelHashes[$i])
@@ -1335,6 +1508,19 @@ try {
     }
 
     if (-not $usedParallelFrameHashing) {
+        $hashProcessedCount = 0
+        $hashTotalCount = [Math]::Max(1, $Files.Count)
+
+        Set-StepProgress `
+            -Activity "Generating frame hashes" `
+            -Status "0/$hashTotalCount files" `
+            -PercentComplete 0
+
+        Set-OverallProgress `
+            -Stage "FrameHashes" `
+            -PercentComplete 0 `
+            -Status "Frame hashes: 0/$hashTotalCount"
+
         for ($i = 0; $i -lt $Files.Count; $i++) {
 
             Write-Host ""
@@ -1344,8 +1530,29 @@ try {
             $hashes[$i] = Get-FrameHashes $Files[$i]
 
             Write-Host "  Frames: $(@($hashes[$i]).Count)"
+
+            $hashProcessedCount++
+            $hashPercent = 100.0 * $hashProcessedCount / $hashTotalCount
+
+            Set-StepProgress `
+                -Activity "Generating frame hashes" `
+                -Status "$hashProcessedCount/$hashTotalCount files" `
+                -PercentComplete $hashPercent
+
+            Set-OverallProgress `
+                -Stage "FrameHashes" `
+                -PercentComplete $hashPercent `
+                -Status "Frame hashes: $hashProcessedCount/$hashTotalCount"
         }
     }
+    else {
+        Set-OverallProgress `
+            -Stage "FrameHashes" `
+            -PercentComplete 100 `
+            -Status "Frame hashes complete"
+    }
+
+    Complete-StepProgress -Activity "Generating frame hashes"
 
     # ========================================================
     # Prepare H264 pieces
@@ -1381,6 +1588,19 @@ try {
     # ========================================================
 
     for ($i = 1; $i -lt $Files.Count; $i++) {
+
+        $pairTotalCount = [Math]::Max(1, $Files.Count - 1)
+        if ($i -eq 1) {
+            Set-StepProgress `
+                -Activity "Processing overlap and video pieces" `
+                -Status "0/$pairTotalCount pairs" `
+                -PercentComplete 0
+
+            Set-OverallProgress `
+                -Stage "PairProcessing" `
+                -PercentComplete 0 `
+                -Status "Pairs: 0/$pairTotalCount"
+        }
 
         Write-Host ""
         Write-Host "=========================================="
@@ -1438,6 +1658,16 @@ try {
             )
 
             [void]$videoPieces.Add($wholeH264)
+
+            $pairPercent = 100.0 * $i / $pairTotalCount
+            Set-StepProgress `
+                -Activity "Processing overlap and video pieces" `
+                -Status "$i/$pairTotalCount pairs" `
+                -PercentComplete $pairPercent
+            Set-OverallProgress `
+                -Stage "PairProcessing" `
+                -PercentComplete $pairPercent `
+                -Status "Pairs: $i/$pairTotalCount"
 
             continue
         }
@@ -1506,6 +1736,16 @@ try {
             $report.Add(
                 "Entire file was overlap; nothing appended."
             )
+
+            $pairPercent = 100.0 * $i / $pairTotalCount
+            Set-StepProgress `
+                -Activity "Processing overlap and video pieces" `
+                -Status "$i/$pairTotalCount pairs" `
+                -PercentComplete $pairPercent
+            Set-OverallProgress `
+                -Stage "PairProcessing" `
+                -PercentComplete $pairPercent `
+                -Status "Pairs: $i/$pairTotalCount"
 
             continue
         }
@@ -1631,7 +1871,26 @@ try {
         )
 
         [void]$videoPieces.Add($restH264)
+
+        $pairPercent = 100.0 * $i / $pairTotalCount
+        Set-StepProgress `
+            -Activity "Processing overlap and video pieces" `
+            -Status "$i/$pairTotalCount pairs" `
+            -PercentComplete $pairPercent
+        Set-OverallProgress `
+            -Stage "PairProcessing" `
+            -PercentComplete $pairPercent `
+            -Status "Pairs: $i/$pairTotalCount"
     }
+
+    if ($Files.Count -le 1) {
+        Set-OverallProgress `
+            -Stage "PairProcessing" `
+            -PercentComplete 100 `
+            -Status "No pairs to process"
+    }
+
+    Complete-StepProgress -Activity "Processing overlap and video pieces"
 
     # ========================================================
     # Concatenate raw H264
@@ -1642,6 +1901,16 @@ try {
 
     Write-Host ""
     Write-Host "Concatenating H.264 bitstreams..."
+
+    Set-StepProgress `
+        -Activity "Finalizing video" `
+        -Status "Concatenating H.264" `
+        -PercentComplete 20
+
+    Set-OverallProgress `
+        -Stage "VideoFinalize" `
+        -PercentComplete 20 `
+        -Status "Video finalize: concatenating bitstreams"
 
     $inputFiles = $videoPieces | ForEach-Object {
         '"' + $_ + '"'
@@ -1656,6 +1925,16 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Could not concatenate H.264 streams."
     }
+
+    Set-StepProgress `
+        -Activity "Finalizing video" `
+        -Status "Creating merged AVI" `
+        -PercentComplete 55
+
+    Set-OverallProgress `
+        -Stage "VideoFinalize" `
+        -PercentComplete 55 `
+        -Status "Video finalize: creating merged AVI"
 
     # ========================================================
     # Create video-only merged AVI
@@ -1680,6 +1959,18 @@ try {
         $output
     )
 
+    Set-StepProgress `
+        -Activity "Finalizing video" `
+        -Status "Video finalize complete" `
+        -PercentComplete 100
+
+    Set-OverallProgress `
+        -Stage "VideoFinalize" `
+        -PercentComplete 100 `
+        -Status "Video finalize complete"
+
+    Complete-StepProgress -Activity "Finalizing video"
+
 # ========================================================
 # AUDIO
 #
@@ -1697,11 +1988,36 @@ if ($ExcludeAudio) {
     Write-Host "Audio excluded by request."
     $report.Add("")
     $report.Add("Audio was excluded by request.")
+
+    Set-StepProgress `
+        -Activity "Finalizing audio" `
+        -Status "Audio excluded" `
+        -PercentComplete 100
+
+    Set-OverallProgress `
+        -Stage "AudioFinalize" `
+        -PercentComplete 100 `
+        -Status "Audio excluded"
+
+    Complete-StepProgress -Activity "Finalizing audio"
 }
 else {
 
 Write-Host ""
 Write-Host "Preparing audio..."
+
+$audioProgressProcessed = 0
+$audioProgressTotal = [Math]::Max(1, $Files.Count)
+
+Set-StepProgress `
+    -Activity "Finalizing audio" `
+    -Status "Preparing segments: 0/$audioProgressTotal files" `
+    -PercentComplete 0
+
+Set-OverallProgress `
+    -Stage "AudioFinalize" `
+    -PercentComplete 0 `
+    -Status "Audio finalize: preparing segments"
 
 $audioParts =
     New-Object System.Collections.Generic.List[string]
@@ -1808,6 +2124,17 @@ Create-AudioSegment `
 
 [void]$audioParts.Add($audio0)
 
+$audioProgressProcessed++
+$audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal
+Set-StepProgress `
+    -Activity "Finalizing audio" `
+    -Status "Preparing segments: $audioProgressProcessed/$audioProgressTotal files" `
+    -PercentComplete $audioStagePercent
+Set-OverallProgress `
+    -Stage "AudioFinalize" `
+    -PercentComplete $audioStagePercent `
+    -Status "Audio finalize: preparing segments"
+
 # --------------------------------------------------------
 # Subsequent videos
 # --------------------------------------------------------
@@ -1865,6 +2192,17 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
             " contributes no video frames."
         )
 
+        $audioProgressProcessed++
+        $audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal
+        Set-StepProgress `
+            -Activity "Finalizing audio" `
+            -Status "Preparing segments: $audioProgressProcessed/$audioProgressTotal files" `
+            -PercentComplete $audioStagePercent
+        Set-OverallProgress `
+            -Stage "AudioFinalize" `
+            -PercentComplete $audioStagePercent `
+            -Status "Audio finalize: preparing segments"
+
         continue
     }
 
@@ -1890,6 +2228,17 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
             @($fileMetadataCache[$frameCacheKey].Frames)
 
         if ($firstNewFrame -ge $frames.Count) {
+            $audioProgressProcessed++
+            $audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal
+            Set-StepProgress `
+                -Activity "Finalizing audio" `
+                -Status "Preparing segments: $audioProgressProcessed/$audioProgressTotal files" `
+                -PercentComplete $audioStagePercent
+            Set-OverallProgress `
+                -Stage "AudioFinalize" `
+                -PercentComplete $audioStagePercent `
+                -Status "Audio finalize: preparing segments"
+
             continue
         }
 
@@ -1911,6 +2260,17 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
         $audioStreamIndices[$i]
 
     [void]$audioParts.Add($audioPart)
+
+    $audioProgressProcessed++
+    $audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal
+    Set-StepProgress `
+        -Activity "Finalizing audio" `
+        -Status "Preparing segments: $audioProgressProcessed/$audioProgressTotal files" `
+        -PercentComplete $audioStagePercent
+    Set-OverallProgress `
+        -Stage "AudioFinalize" `
+        -PercentComplete $audioStagePercent `
+        -Status "Audio finalize: preparing segments"
 }
 
 # --------------------------------------------------------
@@ -1948,6 +2308,16 @@ if ($audioParts.Count -gt 0) {
     Write-Host ""
     Write-Host "Concatenating audio..."
 
+    Set-StepProgress `
+        -Activity "Finalizing audio" `
+        -Status "Concatenating audio" `
+        -PercentComplete 85
+
+    Set-OverallProgress `
+        -Stage "AudioFinalize" `
+        -PercentComplete 85 `
+        -Status "Audio finalize: concatenating"
+
     Run-FFmpeg @(
         "-y",
         "-f", "concat",
@@ -1968,6 +2338,16 @@ if ($audioParts.Count -gt 0) {
 
     Write-Host ""
     Write-Host "Muxing video and audio..."
+
+    Set-StepProgress `
+        -Activity "Finalizing audio" `
+        -Status "Muxing audio into final AVI" `
+        -PercentComplete 95
+
+    Set-OverallProgress `
+        -Stage "AudioFinalize" `
+        -PercentComplete 95 `
+        -Status "Audio finalize: muxing"
 
     Run-FFmpeg @(
         "-y",
@@ -1997,6 +2377,18 @@ if ($audioParts.Count -gt 0) {
         "Audio segments were individually padded/trimmed to match video."
     )
 
+    Set-StepProgress `
+        -Activity "Finalizing audio" `
+        -Status "Audio finalize complete" `
+        -PercentComplete 100
+
+    Set-OverallProgress `
+        -Stage "AudioFinalize" `
+        -PercentComplete 100 `
+        -Status "Audio finalize complete"
+
+    Complete-StepProgress -Activity "Finalizing audio"
+
     Write-Host ""
     Write-Host "Audio successfully added."
 }
@@ -2007,6 +2399,18 @@ else {
 
     $report.Add("")
     $report.Add("No audio segments were created.")
+
+    Set-StepProgress `
+        -Activity "Finalizing audio" `
+        -Status "No audio segments were created" `
+        -PercentComplete 100
+
+    Set-OverallProgress `
+        -Stage "AudioFinalize" `
+        -PercentComplete 100 `
+        -Status "Audio finalize complete"
+
+    Complete-StepProgress -Activity "Finalizing audio"
 }
 }
     # ========================================================
@@ -2035,6 +2439,13 @@ else {
     Write-Host ""
 
     $mergeSucceeded = $true
+
+    Set-OverallProgress `
+        -Stage "Setup" `
+        -PercentComplete 100 `
+        -Status "Merge completed successfully"
+
+    Complete-AllProgress
 
     Write-Host "Press Enter to open the target folder and select the merged video."
     Write-Host "Press Esc to finish."
@@ -2071,6 +2482,8 @@ catch {
     exit 1
 }
 finally {
+
+    Complete-AllProgress
 
     Remove-Item `
         -LiteralPath $tempRoot `
