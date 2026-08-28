@@ -18,6 +18,8 @@ $MinimumMatchFrames = 5
 $FrameRate = "29.83"
 $UseParallelFrameHashing = $true
 $ParallelFrameHashWorkers = 5
+$UseParallelAudioMetadata = $true
+$ParallelAudioMetadataWorkers = 3
 
 # ============================================================
 # Helpers
@@ -196,6 +198,342 @@ function Get-FileMetadata {
         PcmStreamIndex = $pcmStreamIndex
         Frames = $frames
     }
+}
+
+function Get-FileMetadataParallel {
+    param(
+        [string[]]$InputFiles,
+        [int]$WorkerCount,
+        [string]$FfprobePath
+    )
+
+    $files = @($InputFiles)
+    $results = @{}
+
+    if ($files.Count -eq 0) {
+        return $results
+    }
+
+    $workerLimit = [Math]::Max(
+        1,
+        [Math]::Min($WorkerCount, $files.Count)
+    )
+
+    $activeJobs = New-Object System.Collections.ArrayList
+    $nextIndex = 0
+
+    try {
+        while ($nextIndex -lt $files.Count -or $activeJobs.Count -gt 0) {
+
+            while (
+                $nextIndex -lt $files.Count -and
+                $activeJobs.Count -lt $workerLimit
+            ) {
+
+                $index = $nextIndex
+                $file = $files[$index]
+
+                $job = Start-Job -ScriptBlock {
+                    param(
+                        [string]$ffprobeExe,
+                        [string]$filePath,
+                        [int]$fileIndex
+                    )
+
+                    function Invoke-LocalFFprobe {
+                        param(
+                            [string[]]$Arguments
+                        )
+
+                        return @(& $ffprobeExe @Arguments 2>$null)
+                    }
+
+                    function Get-LocalVideoFrames {
+                        param(
+                            [string]$File
+                        )
+
+                        $lines = @(
+                            Invoke-LocalFFprobe @(
+                                "-v", "quiet",
+                                "-select_streams", "v:0",
+                                "-show_entries", "frame=best_effort_timestamp_time,pict_type",
+                                "-of", "csv=p=0",
+                                $File
+                            )
+                        )
+
+                        $frames = New-Object System.Collections.Generic.List[object]
+
+                        foreach ($line in $lines) {
+                            if ([string]::IsNullOrWhiteSpace($line)) {
+                                continue
+                            }
+
+                            $parts = ([string]$line) -split ","
+
+                            if ($parts.Count -lt 2) {
+                                continue
+                            }
+
+                            try {
+                                $time = [double]::Parse(
+                                    $parts[0].Trim(),
+                                    [Globalization.CultureInfo]::InvariantCulture
+                                )
+
+                                [void]$frames.Add(
+                                    [PSCustomObject]@{
+                                        Time = $time
+                                        Type = $parts[1].Trim()
+                                    }
+                                )
+                            }
+                            catch {
+                                continue
+                            }
+                        }
+
+                        return $frames.ToArray()
+                    }
+
+                    function Get-LocalPCMStreamIndex {
+                        param(
+                            [string]$File
+                        )
+
+                        $result = @(
+                            Invoke-LocalFFprobe @(
+                                "-v", "quiet",
+                                "-select_streams", "a",
+                                "-show_entries", "stream=index,codec_name",
+                                "-of", "csv=p=0",
+                                $File
+                            )
+                        )
+
+                        foreach ($line in $result) {
+                            if ([string]::IsNullOrWhiteSpace([string]$line)) {
+                                continue
+                            }
+
+                            $parts = ([string]$line) -split ","
+
+                            if ($parts.Count -lt 2) {
+                                continue
+                            }
+
+                            if ($parts[1].Trim().ToLowerInvariant() -eq "pcm_s16le") {
+                                try {
+                                    return [int]$parts[0].Trim()
+                                }
+                                catch {
+                                    continue
+                                }
+                            }
+                        }
+
+                        return -1
+                    }
+
+                    try {
+                        $probeOutput = @(
+                            Invoke-LocalFFprobe @(
+                                "-v", "quiet",
+                                "-select_streams", "v:0,a",
+                                "-show_entries", "stream=index,codec_name,codec_type:frame=best_effort_timestamp_time,pict_type",
+                                "-of", "json",
+                                $filePath
+                            )
+                        )
+
+                        $pcmStreamIndex = -1
+                        $frames = $null
+
+                        if ($probeOutput.Count -gt 0) {
+                            $jsonText = ($probeOutput -join [Environment]::NewLine).Trim()
+
+                            if (-not [string]::IsNullOrWhiteSpace($jsonText)) {
+                                try {
+                                    $metadata = $jsonText | ConvertFrom-Json -ErrorAction Stop
+
+                                    if ($null -ne $metadata.streams) {
+                                        foreach ($stream in @($metadata.streams)) {
+                                            if ($null -eq $stream.codec_type -or
+                                                $null -eq $stream.codec_name) {
+                                                continue
+                                            }
+
+                                            if ($stream.codec_type -eq "audio" -and
+                                                $stream.codec_name.ToLowerInvariant() -eq "pcm_s16le") {
+
+                                                try {
+                                                    $pcmStreamIndex = [int]$stream.index
+                                                    break
+                                                }
+                                                catch {
+                                                    continue
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    $frameList =
+                                        New-Object System.Collections.Generic.List[object]
+
+                                    if ($null -ne $metadata.frames) {
+                                        foreach ($frame in @($metadata.frames)) {
+                                            if ($null -eq $frame.best_effort_timestamp_time -or
+                                                $null -eq $frame.pict_type) {
+                                                continue
+                                            }
+
+                                            try {
+                                                $time = [double]::Parse(
+                                                    [string]$frame.best_effort_timestamp_time,
+                                                    [Globalization.CultureInfo]::InvariantCulture
+                                                )
+
+                                                [void]$frameList.Add(
+                                                    [PSCustomObject]@{
+                                                        Time = $time
+                                                        Type = [string]$frame.pict_type
+                                                    }
+                                                )
+                                            }
+                                            catch {
+                                                continue
+                                            }
+                                        }
+                                    }
+
+                                    if ($frameList.Count -gt 0) {
+                                        $frames = $frameList.ToArray()
+                                    }
+                                }
+                                catch {
+                                }
+                            }
+                        }
+
+                        if ($null -eq $frames) {
+                            $frames = @(Get-LocalVideoFrames $filePath)
+                        }
+
+                        if ($pcmStreamIndex -lt 0) {
+                            $pcmStreamIndex = Get-LocalPCMStreamIndex $filePath
+                        }
+
+                        return [PSCustomObject]@{
+                            Index = $fileIndex
+                            Metadata = [PSCustomObject]@{
+                                PcmStreamIndex = $pcmStreamIndex
+                                Frames = $frames
+                            }
+                            ErrorMessage = $null
+                        }
+                    }
+                    catch {
+                        return [PSCustomObject]@{
+                            Index = $fileIndex
+                            Metadata = $null
+                            ErrorMessage = (
+                                "Could not read metadata for: " +
+                                $filePath
+                            )
+                        }
+                    }
+                } -ArgumentList $FfprobePath, $file, $index
+
+                [void]$activeJobs.Add(
+                    [PSCustomObject]@{
+                        Index = $index
+                        File = $file
+                        Job = $job
+                    }
+                )
+
+                $nextIndex++
+            }
+
+            if ($activeJobs.Count -eq 0) {
+                break
+            }
+
+            $jobsToWait = @(
+                $activeJobs |
+                    ForEach-Object {
+                        $_.Job
+                    }
+            )
+
+            $finishedJob = Wait-Job -Job $jobsToWait -Any
+
+            if ($null -eq $finishedJob) {
+                throw "Parallel audio metadata generation failed unexpectedly."
+            }
+
+            $jobEntry =
+                $activeJobs |
+                    Where-Object {
+                        $_.Job.Id -eq $finishedJob.Id
+                    } |
+                    Select-Object -First 1
+
+            $jobResult = Receive-Job -Job $finishedJob -ErrorAction SilentlyContinue
+
+            Remove-Job -Job $finishedJob -Force | Out-Null
+
+            if ($null -ne $jobEntry) {
+                [void]$activeJobs.Remove($jobEntry)
+            }
+
+            if ($finishedJob.State -ne "Completed") {
+                throw (
+                    "Parallel audio metadata worker failed for: " +
+                    $jobEntry.File
+                )
+            }
+
+            if ($null -eq $jobResult) {
+                throw (
+                    "Parallel audio metadata worker returned no data for: " +
+                    $jobEntry.File
+                )
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace(
+                [string]$jobResult.ErrorMessage
+            )) {
+                throw $jobResult.ErrorMessage
+            }
+
+            $results[[int]$jobResult.Index] = $jobResult.Metadata
+        }
+    }
+    finally {
+        foreach ($entry in @($activeJobs)) {
+            try {
+                Stop-Job -Job $entry.Job -ErrorAction SilentlyContinue
+            }
+            catch {
+            }
+
+            try {
+                Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+            }
+        }
+    }
+
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        if (-not $results.ContainsKey($i)) {
+            throw "Missing audio metadata result for file index $i"
+        }
+    }
+
+    return $results
 }
 
 function Get-FrameHashes {
@@ -869,6 +1207,43 @@ try {
         New-Object System.Collections.Generic.List[bool]
     $audioStreamIndices =
         New-Object System.Collections.Generic.List[int]
+
+    if (
+        $UseParallelAudioMetadata -and
+        $ParallelAudioMetadataWorkers -gt 1 -and
+        $Files.Count -gt 1
+    ) {
+        try {
+            Write-Host ""
+            Write-Host (
+                "Reading audio metadata in parallel " +
+                "($ParallelAudioMetadataWorkers workers)..."
+            )
+
+            $parallelAudioMetadata = Get-FileMetadataParallel `
+                -InputFiles $Files `
+                -WorkerCount $ParallelAudioMetadataWorkers `
+                -FfprobePath $ffprobe
+
+            for ($i = 0; $i -lt $Files.Count; $i++) {
+                $metadataCacheKey = [IO.Path]::GetFullPath($Files[$i])
+                $fileMetadataCache[$metadataCacheKey] =
+                    $parallelAudioMetadata[$i]
+            }
+        }
+        catch {
+            Write-Host ""
+            Write-Host (
+                "Parallel audio metadata failed; " +
+                "falling back to sequential mode."
+            )
+
+            $report.Add("")
+            $report.Add(
+                "Parallel audio metadata failed; used sequential fallback."
+            )
+        }
+    }
 
     foreach ($file in $Files) {
 
