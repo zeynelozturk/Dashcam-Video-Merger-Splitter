@@ -16,6 +16,8 @@ $ffprobe = "ffprobe.exe"
 
 $MinimumMatchFrames = 5
 $FrameRate = "29.83"
+$UseParallelFrameHashing = $true
+$ParallelFrameHashWorkers = 2
 
 # ============================================================
 # Helpers
@@ -232,6 +234,178 @@ function Get-FrameHashes {
     }
 
     return ,$hashes.ToArray()
+}
+
+function Get-FrameHashesParallel {
+    param(
+        [string[]]$InputFiles,
+        [int]$WorkerCount,
+        [string]$FfmpegPath
+    )
+
+    $files = @($InputFiles)
+    $results = @{}
+
+    if ($files.Count -eq 0) {
+        return $results
+    }
+
+    $workerLimit = [Math]::Max(
+        1,
+        [Math]::Min($WorkerCount, $files.Count)
+    )
+
+    $activeJobs = New-Object System.Collections.ArrayList
+    $nextIndex = 0
+
+    try {
+        while ($nextIndex -lt $files.Count -or $activeJobs.Count -gt 0) {
+
+            while (
+                $nextIndex -lt $files.Count -and
+                $activeJobs.Count -lt $workerLimit
+            ) {
+
+                $index = $nextIndex
+                $file = $files[$index]
+
+                $job = Start-Job -ScriptBlock {
+                    param(
+                        [string]$ffmpegExe,
+                        [string]$filePath,
+                        [int]$fileIndex
+                    )
+
+                    $lines = @(
+                        & $ffmpegExe `
+                            "-v" "quiet" `
+                            "-i" $filePath `
+                            "-map" "0:v:0" `
+                            "-an" `
+                            "-f" "framemd5" `
+                            "-"
+                    )
+
+                    if ($LASTEXITCODE -ne 0) {
+                        return [PSCustomObject]@{
+                            Index = $fileIndex
+                            Hashes = @()
+                            ErrorMessage = "Could not calculate frame hashes for: $filePath"
+                        }
+                    }
+
+                    $hashes =
+                        New-Object System.Collections.Generic.List[string]
+
+                    foreach ($line in $lines) {
+                        if ([string]$line -like "#*" -or
+                            [string]::IsNullOrWhiteSpace($line)) {
+                            continue
+                        }
+
+                        $parts = ([string]$line) -split ","
+
+                        if ($parts.Count -ge 6) {
+                            [void]$hashes.Add($parts[5].Trim())
+                        }
+                    }
+
+                    return [PSCustomObject]@{
+                        Index = $fileIndex
+                        Hashes = $hashes.ToArray()
+                        ErrorMessage = $null
+                    }
+                } -ArgumentList $FfmpegPath, $file, $index
+
+                [void]$activeJobs.Add(
+                    [PSCustomObject]@{
+                        Index = $index
+                        File = $file
+                        Job = $job
+                    }
+                )
+
+                $nextIndex++
+            }
+
+            if ($activeJobs.Count -eq 0) {
+                break
+            }
+
+            $jobsToWait = @(
+                $activeJobs |
+                    ForEach-Object {
+                        $_.Job
+                    }
+            )
+
+            $finishedJob = Wait-Job -Job $jobsToWait -Any
+
+            if ($null -eq $finishedJob) {
+                throw "Parallel hash generation failed unexpectedly."
+            }
+
+            $jobEntry =
+                $activeJobs |
+                    Where-Object {
+                        $_.Job.Id -eq $finishedJob.Id
+                    } |
+                    Select-Object -First 1
+
+            $jobResult = Receive-Job -Job $finishedJob -ErrorAction SilentlyContinue
+
+            Remove-Job -Job $finishedJob -Force | Out-Null
+
+            if ($null -ne $jobEntry) {
+                [void]$activeJobs.Remove($jobEntry)
+            }
+
+            if ($finishedJob.State -ne "Completed") {
+                throw (
+                    "Parallel hash worker failed for: " +
+                    $jobEntry.File
+                )
+            }
+
+            if ($null -eq $jobResult) {
+                throw (
+                    "Parallel hash worker returned no data for: " +
+                    $jobEntry.File
+                )
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace(
+                [string]$jobResult.ErrorMessage
+            )) {
+                throw $jobResult.ErrorMessage
+            }
+
+            $results[[int]$jobResult.Index] = @($jobResult.Hashes)
+        }
+    }
+    finally {
+        foreach ($entry in @($activeJobs)) {
+            try {
+                Stop-Job -Job $entry.Job -ErrorAction SilentlyContinue
+            }
+            catch {
+            }
+
+            try {
+                Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+            }
+        }
+    }
+
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        if (-not $results.ContainsKey($i)) {
+            throw "Missing hash result for file index $i"
+        }
+    }
+
+    return $results
 }
 
 function Convert-ToStringArray {
@@ -737,15 +911,65 @@ try {
 
     $hashes = @{}
 
-    for ($i = 0; $i -lt $Files.Count; $i++) {
+    $usedParallelFrameHashing = $false
 
-        Write-Host ""
-        Write-Host "Creating frame hashes:"
-        Write-Host "  $([IO.Path]::GetFileName($Files[$i]))"
+    if (
+        $UseParallelFrameHashing -and
+        $ParallelFrameHashWorkers -gt 1 -and
+        $Files.Count -gt 1
+    ) {
+        try {
+            Write-Host ""
+            Write-Host (
+                "Creating frame hashes in parallel " +
+                "($ParallelFrameHashWorkers workers)..."
+            )
 
-        $hashes[$i] = Get-FrameHashes $Files[$i]
+            $parallelHashes = Get-FrameHashesParallel `
+                -InputFiles $Files `
+                -WorkerCount $ParallelFrameHashWorkers `
+                -FfmpegPath $ffmpeg
 
-        Write-Host "  Frames: $(@($hashes[$i]).Count)"
+            for ($i = 0; $i -lt $Files.Count; $i++) {
+                $hashes[$i] = @($parallelHashes[$i])
+
+                Write-Host ""
+                Write-Host "Creating frame hashes:"
+                Write-Host "  $([IO.Path]::GetFileName($Files[$i]))"
+                Write-Host "  Frames: $(@($hashes[$i]).Count)"
+            }
+
+            $usedParallelFrameHashing = $true
+        }
+        catch {
+            if ($_.Exception.Message -like "Could not calculate frame hashes for:*") {
+                throw
+            }
+
+            Write-Host ""
+            Write-Host (
+                "Parallel hash generation failed; " +
+                "falling back to sequential mode."
+            )
+
+            $report.Add("")
+            $report.Add(
+                "Parallel hash generation failed; used sequential fallback."
+            )
+        }
+    }
+
+    if (-not $usedParallelFrameHashing) {
+        for ($i = 0; $i -lt $Files.Count; $i++) {
+
+            Write-Host ""
+            Write-Host "Creating frame hashes:"
+            Write-Host "  $([IO.Path]::GetFileName($Files[$i]))"
+
+            $hashes[$i] = Get-FrameHashes $Files[$i]
+
+            Write-Host "  Frames: $(@($hashes[$i]).Count)"
+        }
     }
 
     # ========================================================
