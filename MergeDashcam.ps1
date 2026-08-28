@@ -99,6 +99,103 @@ function Get-VideoFrames {
     return $frames.ToArray()
 }
 
+function Get-FileMetadata {
+    param(
+        [string]$File
+    )
+
+    $probeOutput = @(
+        Invoke-FFprobe @(
+            "-v", "quiet",
+            "-select_streams", "v:0,a",
+            "-show_entries", "stream=index,codec_name,codec_type:frame=best_effort_timestamp_time,pict_type",
+            "-of", "json",
+            $File
+        )
+    )
+
+    $pcmStreamIndex = -1
+    $frames = $null
+
+    if ($probeOutput.Count -gt 0) {
+        $jsonText = ($probeOutput -join [Environment]::NewLine).Trim()
+
+        if (-not [string]::IsNullOrWhiteSpace($jsonText)) {
+            try {
+                $metadata = $jsonText | ConvertFrom-Json -ErrorAction Stop
+
+                if ($null -ne $metadata.streams) {
+                    foreach ($stream in @($metadata.streams)) {
+                        if ($null -eq $stream.codec_type -or
+                            $null -eq $stream.codec_name) {
+                            continue
+                        }
+
+                        if ($stream.codec_type -eq "audio" -and
+                            $stream.codec_name.ToLowerInvariant() -eq "pcm_s16le") {
+
+                            try {
+                                $pcmStreamIndex = [int]$stream.index
+                                break
+                            }
+                            catch {
+                                continue
+                            }
+                        }
+                    }
+                }
+
+                $frameList = New-Object System.Collections.Generic.List[object]
+
+                if ($null -ne $metadata.frames) {
+                    foreach ($frame in @($metadata.frames)) {
+                        if ($null -eq $frame.best_effort_timestamp_time -or
+                            $null -eq $frame.pict_type) {
+                            continue
+                        }
+
+                        try {
+                            $time = [double]::Parse(
+                                [string]$frame.best_effort_timestamp_time,
+                                [Globalization.CultureInfo]::InvariantCulture
+                            )
+
+                            [void]$frameList.Add(
+                                [PSCustomObject]@{
+                                    Time = $time
+                                    Type = [string]$frame.pict_type
+                                }
+                            )
+                        }
+                        catch {
+                            continue
+                        }
+                    }
+                }
+
+                if ($frameList.Count -gt 0) {
+                    $frames = $frameList.ToArray()
+                }
+            }
+            catch {
+            }
+        }
+    }
+
+    if ($null -eq $frames) {
+        $frames = @(Get-VideoFrames $File)
+    }
+
+    if ($pcmStreamIndex -lt 0) {
+        $pcmStreamIndex = Get-PCMStreamIndex $File
+    }
+
+    return [PSCustomObject]@{
+        PcmStreamIndex = $pcmStreamIndex
+        Frames = $frames
+    }
+}
+
 function Get-FrameHashes {
     param(
         [string]$File
@@ -573,6 +670,9 @@ $report.Add("")
 
 try {
 
+    $fileMetadataCache = @{}
+    $overlapCache = @{}
+
     # ========================================================
     # Detect audio
     # ========================================================
@@ -582,7 +682,16 @@ try {
 
     foreach ($file in $Files) {
 
-        $audioStreamIndex = Get-PCMStreamIndex $file
+        $metadataCacheKey = [IO.Path]::GetFullPath($file)
+
+        if (-not $fileMetadataCache.ContainsKey($metadataCacheKey)) {
+            $fileMetadataCache[$metadataCacheKey] =
+                Get-FileMetadata $file
+        }
+
+        $audioStreamIndex =
+            [int]$fileMetadataCache[$metadataCacheKey].PcmStreamIndex
+
         $hasAudio = ($audioStreamIndex -ge 0)
         $audioAvailable += $hasAudio
         $audioStreamIndices += $audioStreamIndex
@@ -611,8 +720,6 @@ try {
     # ========================================================
 
     $hashes = @{}
-    $overlapCache = @{}
-    $frameMetadataCache = @{}
 
     for ($i = 0; $i -lt $Files.Count; $i++) {
 
@@ -755,11 +862,12 @@ try {
         }
 
         $frameCacheKey = [IO.Path]::GetFullPath($Files[$i])
-        if (-not $frameMetadataCache.ContainsKey($frameCacheKey)) {
-            $frameMetadataCache[$frameCacheKey] = @(Get-VideoFrames $Files[$i])
+        if (-not $fileMetadataCache.ContainsKey($frameCacheKey)) {
+            $fileMetadataCache[$frameCacheKey] =
+                Get-FileMetadata $Files[$i]
         }
 
-        $frames = @($frameMetadataCache[$frameCacheKey])
+        $frames = @($fileMetadataCache[$frameCacheKey].Frames)
 
         Write-Host "Current file frames: $($frames.Count)"
         Write-Host "Overlap starts at current-file frame: $($overlap.BStart)"
@@ -833,8 +941,8 @@ try {
 
         if ($transitionFrames -gt 0) {
 
-            $transition = Join-Path $tempRoot (
-                "transition_{0:D3}.mp4" -f $i
+            $transitionH264 = Join-Path $tempRoot (
+                "transition_{0:D3}.h264" -f $i
             )
 
             $duration = $keyTime - $startTime
@@ -861,19 +969,6 @@ try {
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-crf", "18",
-                $transition
-            )
-
-            $transitionH264 = Join-Path $tempRoot (
-                "transition_{0:D3}.h264" -f $i
-            )
-
-            Run-FFmpeg @(
-                "-y",
-                "-i", $transition,
-                "-an",
-                "-c:v", "copy",
-                "-bsf:v", "h264_mp4toannexb",
                 "-f", "h264",
                 $transitionH264
             )
@@ -1171,12 +1266,13 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
     if ($firstNewFrame -gt 0) {
 
         $frameCacheKey = [IO.Path]::GetFullPath($Files[$i])
-        if (-not $frameMetadataCache.ContainsKey($frameCacheKey)) {
-            $frameMetadataCache[$frameCacheKey] = @(Get-VideoFrames $Files[$i])
+        if (-not $fileMetadataCache.ContainsKey($frameCacheKey)) {
+            $fileMetadataCache[$frameCacheKey] =
+                Get-FileMetadata $Files[$i]
         }
 
         $frames =
-            @($frameMetadataCache[$frameCacheKey])
+            @($fileMetadataCache[$frameCacheKey].Frames)
 
         if ($firstNewFrame -ge $frames.Count) {
             continue
