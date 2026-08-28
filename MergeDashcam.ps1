@@ -143,8 +143,8 @@ function Find-Overlap {
         $B
     )
 
-    $A = @($A)
-    $B = @($B)
+    $A = @($A | ForEach-Object { [string]$_ })
+    $B = @($B | ForEach-Object { [string]$_ })
 
     $maxLength = [Math]::Min($A.Count, $B.Count)
 
@@ -157,8 +157,8 @@ function Find-Overlap {
 
         for ($j = 0; $j -lt $length; $j++) {
 
-            if ([string]$A[$aStart + $j] -ne
-                [string]$B[$j]) {
+            if ($A[$aStart + $j] -ne
+                $B[$j]) {
 
                 $match = $false
                 break
@@ -184,8 +184,8 @@ function Find-EventPrefixOverlap {
         $B
     )
 
-    $A = @($A)
-    $B = @($B)
+    $A = @($A | ForEach-Object { [string]$_ })
+    $B = @($B | ForEach-Object { [string]$_ })
 
     # Dashcam event behavior:
     # REC = [unique beginning][tail]
@@ -204,8 +204,8 @@ function Find-EventPrefixOverlap {
 
         for ($j = 0; $j -lt $length; $j++) {
 
-            if ([string]$A[$aStart + $j] -ne
-                [string]$B[$j]) {
+            if ($A[$aStart + $j] -ne
+                $B[$j]) {
 
                 $match = $false
                 break
@@ -611,6 +611,8 @@ try {
     # ========================================================
 
     $hashes = @{}
+    $overlapCache = @{}
+    $frameMetadataCache = @{}
 
     for ($i = 0; $i -lt $Files.Count; $i++) {
 
@@ -673,6 +675,8 @@ try {
                 $Files[$i] `
                 $previousHashes `
                 $currentHashes
+
+        $overlapCache[$i] = $overlapInfo
 
         $overlap = $overlapInfo.Result
 
@@ -750,7 +754,12 @@ try {
             )
         }
 
-        $frames = @(Get-VideoFrames $Files[$i])
+        $frameCacheKey = [IO.Path]::GetFullPath($Files[$i])
+        if (-not $frameMetadataCache.ContainsKey($frameCacheKey)) {
+            $frameMetadataCache[$frameCacheKey] = @(Get-VideoFrames $Files[$i])
+        }
+
+        $frames = @($frameMetadataCache[$frameCacheKey])
 
         Write-Host "Current file frames: $($frames.Count)"
         Write-Host "Overlap starts at current-file frame: $($overlap.BStart)"
@@ -1104,12 +1113,17 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
     $currentHashes =
         $hashes[$i]
 
-    $overlapInfo =
-        Find-OverlapWithEventFallback `
-            $Files[$i - 1] `
-            $Files[$i] `
-            $previousHashes `
-            $currentHashes
+    $overlapInfo = $overlapCache[$i]
+    if ($null -eq $overlapInfo) {
+        $overlapInfo =
+            Find-OverlapWithEventFallback `
+                $Files[$i - 1] `
+                $Files[$i] `
+                $previousHashes `
+                $currentHashes
+
+        $overlapCache[$i] = $overlapInfo
+    }
 
     $overlap = $overlapInfo.Result
 
@@ -1156,8 +1170,13 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
 
     if ($firstNewFrame -gt 0) {
 
+        $frameCacheKey = [IO.Path]::GetFullPath($Files[$i])
+        if (-not $frameMetadataCache.ContainsKey($frameCacheKey)) {
+            $frameMetadataCache[$frameCacheKey] = @(Get-VideoFrames $Files[$i])
+        }
+
         $frames =
-            @(Get-VideoFrames $Files[$i])
+            @($frameMetadataCache[$frameCacheKey])
 
         if ($firstNewFrame -ge $frames.Count) {
             continue
