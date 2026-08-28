@@ -234,14 +234,28 @@ function Get-FrameHashes {
     return ,$hashes.ToArray()
 }
 
+function Convert-ToStringArray {
+    param(
+        $InputItems
+    )
+
+    $result = New-Object System.Collections.Generic.List[string]
+
+    foreach ($item in @($InputItems)) {
+        [void]$result.Add([string]$item)
+    }
+
+    return $result.ToArray()
+}
+
 function Find-Overlap {
     param(
         $A,
         $B
     )
 
-    $A = @($A | ForEach-Object { [string]$_ })
-    $B = @($B | ForEach-Object { [string]$_ })
+    $A = @(Convert-ToStringArray $A)
+    $B = @(Convert-ToStringArray $B)
 
     $maxLength = [Math]::Min($A.Count, $B.Count)
 
@@ -281,8 +295,8 @@ function Find-EventPrefixOverlap {
         $B
     )
 
-    $A = @($A | ForEach-Object { [string]$_ })
-    $B = @($B | ForEach-Object { [string]$_ })
+    $A = @(Convert-ToStringArray $A)
+    $B = @(Convert-ToStringArray $B)
 
     # Dashcam event behavior:
     # REC = [unique beginning][tail]
@@ -677,8 +691,10 @@ try {
     # Detect audio
     # ========================================================
 
-    $audioAvailable = @()
-    $audioStreamIndices = @()
+    $audioAvailable =
+        New-Object System.Collections.Generic.List[bool]
+    $audioStreamIndices =
+        New-Object System.Collections.Generic.List[int]
 
     foreach ($file in $Files) {
 
@@ -693,8 +709,8 @@ try {
             [int]$fileMetadataCache[$metadataCacheKey].PcmStreamIndex
 
         $hasAudio = ($audioStreamIndex -ge 0)
-        $audioAvailable += $hasAudio
-        $audioStreamIndices += $audioStreamIndex
+        [void]$audioAvailable.Add($hasAudio)
+        [void]$audioStreamIndices.Add($audioStreamIndex)
 
         if ($hasAudio) {
             Write-Host (
