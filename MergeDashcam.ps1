@@ -17,7 +17,7 @@ $ffprobe = "ffprobe.exe"
 $MinimumMatchFrames = 5
 $FrameRate = "29.83"
 $UseParallelFrameHashing = $true
-$ParallelFrameHashWorkers = 2
+$ParallelFrameHashWorkers = 5
 
 # ============================================================
 # Helpers
