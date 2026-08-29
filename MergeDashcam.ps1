@@ -20,6 +20,7 @@ $UseParallelFrameHashing = $true
 $ParallelFrameHashWorkers = 5
 $UseParallelAudioMetadata = $true
 $ParallelAudioMetadataWorkers = 3
+$QuickValidationSeconds = 2.0
 $MinimalConsoleOutput = $true
 $SuppressFFmpegConsoleOutput = $true
 
@@ -187,13 +188,80 @@ function Invoke-FFprobe {
     return $result
 }
 
+function Test-QuickVideoValidity {
+    param(
+        [string]$File,
+        [double]$DecodeSeconds
+    )
+
+    $videoStream = @(
+        Invoke-FFprobe @(
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=nw=1:nk=1",
+            $File
+        )
+    )
+
+    $videoCodec = ($videoStream -join "").Trim()
+    if ([string]::IsNullOrWhiteSpace($videoCodec)) {
+        return [PSCustomObject]@{
+            IsValid = $false
+            Stage = "header"
+            Detail = "no readable video stream"
+        }
+    }
+
+    $secondsText = $DecodeSeconds.ToString(
+        "0.###",
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+
+    $quickArguments = @(
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostats",
+        "-t", $secondsText,
+        "-i", $File,
+        "-map", "0:v:0",
+        "-f", "null",
+        "-"
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $ffmpeg @quickArguments 1>$null 2>$null
+        $decodeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($decodeExitCode -ne 0) {
+        return [PSCustomObject]@{
+            IsValid = $false
+            Stage = "decode${secondsText}s"
+            Detail = "ffmpeg decode failed"
+        }
+    }
+
+    return [PSCustomObject]@{
+        IsValid = $true
+        Stage = "ok"
+        Detail = ""
+    }
+}
+
 $script:ProgressEnabled = $true
 
 $script:ProgressWeights = [ordered]@{
     Setup = 5
+    QuickValidation = 10
     AudioMetadata = 15
-    FrameHashes = 30
-    PairProcessing = 25
+    FrameHashes = 25
+    PairProcessing = 20
     VideoFinalize = 10
     AudioFinalize = 15
 }
@@ -1542,6 +1610,131 @@ try {
         -Activity "Starting merge" `
         -Status "Preparing stages" `
         -PercentComplete 0
+
+    # ========================================================
+    # Quick pre-check and optional skip
+    # ========================================================
+
+    $quickCheckFailed =
+        New-Object System.Collections.Generic.List[object]
+    $quickCheckPassed =
+        New-Object System.Collections.Generic.List[string]
+
+    $quickTotal = [Math]::Max(1, $Files.Count)
+
+    Set-StepProgress `
+        -Activity "Quick file validation" `
+        -Status "0/$quickTotal files" `
+        -PercentComplete 0
+
+    Set-OverallProgress `
+        -Stage "QuickValidation" `
+        -PercentComplete 0 `
+        -Status "Quick validation: 0/$quickTotal"
+
+    $quickProcessed = 0
+    foreach ($file in $Files) {
+        $check = Test-QuickVideoValidity `
+            -File $file `
+            -DecodeSeconds $QuickValidationSeconds
+
+        if ($check.IsValid) {
+            [void]$quickCheckPassed.Add($file)
+        }
+        else {
+            [void]$quickCheckFailed.Add(
+                [PSCustomObject]@{
+                    File = $file
+                    Stage = [string]$check.Stage
+                    Detail = [string]$check.Detail
+                }
+            )
+        }
+
+        $quickProcessed++
+        $quickPercent = 100.0 * $quickProcessed / $quickTotal
+
+        Set-StepProgress `
+            -Activity "Quick file validation" `
+            -Status "$quickProcessed/$quickTotal files" `
+            -PercentComplete $quickPercent
+
+        Set-OverallProgress `
+            -Stage "QuickValidation" `
+            -PercentComplete $quickPercent `
+            -Status "Quick validation: $quickProcessed/$quickTotal"
+    }
+
+    Complete-StepProgress -Activity "Quick file validation"
+
+    if ($quickCheckFailed.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Quick validation found problematic files:"
+
+        foreach ($failed in $quickCheckFailed) {
+            Write-Host (
+                "- " +
+                [IO.Path]::GetFileName([string]$failed.File) +
+                " | " +
+                [string]$failed.Stage +
+                " | " +
+                [string]$failed.Detail
+            )
+        }
+
+        Write-Host ""
+        Write-Host "Suggestion: run chkdsk on the source drive, then retry."
+
+        $report.Add("Quick validation failed files:")
+        foreach ($failed in $quickCheckFailed) {
+            $report.Add(
+                "- " +
+                [string]$failed.File +
+                " | " +
+                [string]$failed.Stage +
+                " | " +
+                [string]$failed.Detail
+            )
+        }
+        $report.Add("")
+
+        $continueWithSkips = $false
+        while ($true) {
+            $answer = Read-Host "Continue by skipping failed files? [Y/N]"
+            if ([string]::IsNullOrWhiteSpace($answer)) {
+                continue
+            }
+
+            $normalized = $answer.Trim().ToUpperInvariant()
+            if ($normalized -eq "Y" -or $normalized -eq "YES") {
+                $continueWithSkips = $true
+                break
+            }
+            if ($normalized -eq "N" -or $normalized -eq "NO") {
+                break
+            }
+        }
+
+        if (-not $continueWithSkips) {
+            throw (
+                "Quick validation failed for " +
+                $quickCheckFailed.Count +
+                " file(s). Run chkdsk on the source drive and retry."
+            )
+        }
+
+        $Files = @($quickCheckPassed.ToArray())
+
+        $report.Add("Skipped files (continued without them):")
+        foreach ($failed in $quickCheckFailed) {
+            $report.Add([string]$failed.File)
+        }
+        $report.Add("")
+
+        if ($Files.Count -lt 2) {
+            throw "Not enough valid files remain after skipping invalid files. Need at least 2."
+        }
+    }
 
     $fileMetadataCache = @{}
     $overlapCache = @{}
