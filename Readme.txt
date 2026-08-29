@@ -20,10 +20,11 @@ Features
 
 Usage
 
-- Select and drag file(s) to .bat file. The first and last modified dates will be shown, then the destination folder and audio inclusion will be asked.
+- Either drag files onto the .bat file, or open the .bat file and drag files into its command window. At least two files are required.
+- After the initial files are sorted, you may add event videos by dragging them into the command window. Press Enter without dragging to skip.
+- Audio inclusion will then be asked.
 - The destination choices are the last folder (default), the folder containing the videos, or Browse. The last selected folder is remembered for the next job.
 - Press Enter at the audio question to include audio.
-- You may add more files at the first prompt by dragging them into the command window, then pressing Enter. Press Enter without dragging to skip.
 
 A report will be written to a file named after the merged video in the target folder.
 

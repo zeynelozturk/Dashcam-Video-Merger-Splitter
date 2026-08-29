@@ -241,16 +241,21 @@ function Get-DetectedVideoFrameRate {
         ) -join ""
     ).Trim()
 
-    if ($rateText -notmatch '^([0-9]+(?:\.[0-9]+)?)/([0-9]+(?:\.[0-9]+)?)$') {
+    $rateMatch = [regex]::Match(
+        $rateText,
+        '^([0-9]+(?:\.[0-9]+)?)/([0-9]+(?:\.[0-9]+)?)$'
+    )
+
+    if (-not $rateMatch.Success) {
         return $null
     }
 
     $numerator = [double]::Parse(
-        $Matches[1],
+        $rateMatch.Groups[1].Value,
         [Globalization.CultureInfo]::InvariantCulture
     )
     $denominator = [double]::Parse(
-        $Matches[2],
+        $rateMatch.Groups[2].Value,
         [Globalization.CultureInfo]::InvariantCulture
     )
 
@@ -1434,17 +1439,26 @@ function Convert-DraggedFileList {
     )
 
     $paths = New-Object System.Collections.Generic.List[string]
-    $matches = [regex]::Matches($Text, '"([^"]+)"|(\S+)')
+    $pathMatches = [regex]::Matches(
+        $Text,
+        '"([^"]*)"|''((?:''''|[^''])*)''|(\S+)'
+    )
 
-    foreach ($match in $matches) {
+    foreach ($match in $pathMatches) {
         if ($match.Groups[1].Success) {
             $path = $match.Groups[1].Value.Trim()
         }
+        elseif ($match.Groups[2].Success) {
+            $path = $match.Groups[2].Value.Replace("''", "'").Trim()
+        }
         else {
-            $path = $match.Groups[2].Value.Trim()
+            $path = $match.Groups[3].Value.Trim()
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($path)) {
+        if (
+            -not [string]::IsNullOrWhiteSpace($path) -and
+            $path -ne "&"
+        ) {
             [void]$paths.Add($path)
         }
     }
@@ -1557,13 +1571,29 @@ function Select-OutputDirectory {
 # Validate input
 # ============================================================
 
-if ($null -eq $Files -or $Files.Count -lt 2) {
+if ($null -eq $Files) {
+    $Files = @()
+}
 
+while ($Files.Count -lt 2) {
     Write-Host ""
-    Write-Host "Drag two or more dashcam AVI files onto the batch file."
-    Write-Host ""
-    pause
-    exit
+    Write-Host (
+        "Drag dashcam video files into this window, then press Enter. " +
+        "At least two files are required. Currently selected: $($Files.Count)"
+    )
+
+    $draggedText = Read-Host "Files"
+    if ([string]::IsNullOrWhiteSpace($draggedText)) {
+        continue
+    }
+
+    $draggedFiles = @(Convert-DraggedFileList $draggedText)
+    if ($draggedFiles.Count -eq 0) {
+        Write-Host "No file paths were detected. Please try again."
+        continue
+    }
+
+    $Files = @($Files) + $draggedFiles
 }
 
 $initialFiles = @(
@@ -1622,6 +1652,29 @@ foreach ($file in $Files) {
 
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
         throw "File not found: $file"
+    }
+}
+
+if (-not $ExcludeAudio) {
+    while ($true) {
+        $audioChoice = Read-Host "Include audio? (Y/n, press Enter for Y)"
+
+        if ([string]::IsNullOrWhiteSpace($audioChoice)) {
+            break
+        }
+
+        $normalizedAudioChoice = $audioChoice.Trim().ToUpperInvariant()
+        if ($normalizedAudioChoice -eq "Y" -or
+            $normalizedAudioChoice -eq "YES") {
+            break
+        }
+        if ($normalizedAudioChoice -eq "N" -or
+            $normalizedAudioChoice -eq "NO") {
+            $ExcludeAudio = $true
+            break
+        }
+
+        Write-Host "Please enter Y or N."
     }
 }
 
