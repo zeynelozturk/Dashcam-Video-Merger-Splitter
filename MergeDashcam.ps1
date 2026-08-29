@@ -138,6 +138,56 @@ function Complete-AllProgress {
     Write-Progress -Id 1 -Activity "Dashcam merge overall progress" -Completed
 }
 
+function Join-BinaryFiles {
+    param(
+        [string[]]$InputFiles,
+        [string]$OutputFile
+    )
+
+    if ($null -eq $InputFiles -or $InputFiles.Count -eq 0) {
+        throw "No input files were provided for binary concatenation."
+    }
+
+    $bufferSize = 4MB
+    $buffer = New-Object byte[] $bufferSize
+
+    $outputStream = [System.IO.File]::Open(
+        $OutputFile,
+        [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+    )
+
+    try {
+        foreach ($inputFile in $InputFiles) {
+            $inputStream = [System.IO.File]::Open(
+                $inputFile,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::Read
+            )
+
+            try {
+                while ($true) {
+                    $readCount = $inputStream.Read($buffer, 0, $buffer.Length)
+
+                    if ($readCount -le 0) {
+                        break
+                    }
+
+                    $outputStream.Write($buffer, 0, $readCount)
+                }
+            }
+            finally {
+                $inputStream.Dispose()
+            }
+        }
+    }
+    finally {
+        $outputStream.Dispose()
+    }
+}
+
 function Get-VideoFrames {
     param(
         [string]$File
@@ -1912,19 +1962,7 @@ try {
         -PercentComplete 20 `
         -Status "Video finalize: concatenating bitstreams"
 
-    $inputFiles = $videoPieces | ForEach-Object {
-        '"' + $_ + '"'
-    }
-
-    cmd.exe /c (
-        'copy /b ' +
-        ($inputFiles -join '+') +
-        ' "' + $combinedH264 + '"'
-    )
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not concatenate H.264 streams."
-    }
+    Join-BinaryFiles -InputFiles @($videoPieces) -OutputFile $combinedH264
 
     Set-StepProgress `
         -Activity "Finalizing video" `
