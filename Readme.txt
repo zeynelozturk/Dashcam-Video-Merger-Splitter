@@ -37,6 +37,7 @@ Configuration
 - RecordingFilePrefix and EventFilePrefix identify Deepfly DF10 recording and event files for its handoff rules.
 - EnableAudioBoundaryRepair fills short audio tail gaps by stretching only the final part of the available audio without changing its pitch.
 - AudioBoundaryRepairTailSeconds controls how much audio may be stretched. AudioBoundaryRepairMaximumGapSeconds limits repairs to short gaps; larger gaps retain silence.
+- AudioBoundaryRepairCompensationSeconds slightly overextends repaired audio to account for FFmpeg atempo processing latency; excess audio is trimmed.
 - AudioBoundaryRepairFadeSeconds applies a tiny edge fade to prevent clicks. Files without audio still receive silence normally.
 - The remaining settings control parallel processing, validation, and console output.
 

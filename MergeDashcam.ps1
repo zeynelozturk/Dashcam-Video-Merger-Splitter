@@ -32,6 +32,7 @@ $requiredSettings = @(
     "EnableAudioBoundaryRepair",
     "AudioBoundaryRepairTailSeconds",
     "AudioBoundaryRepairMaximumGapSeconds",
+    "AudioBoundaryRepairCompensationSeconds",
     "AudioBoundaryRepairFadeSeconds",
     "QuickValidationSeconds",
     "MinimalConsoleOutput",
@@ -60,6 +61,8 @@ $AudioBoundaryRepairTailSeconds =
     [double]$config.AudioBoundaryRepairTailSeconds
 $AudioBoundaryRepairMaximumGapSeconds =
     [double]$config.AudioBoundaryRepairMaximumGapSeconds
+$AudioBoundaryRepairCompensationSeconds =
+    [double]$config.AudioBoundaryRepairCompensationSeconds
 $AudioBoundaryRepairFadeSeconds =
     [double]$config.AudioBoundaryRepairFadeSeconds
 $QuickValidationSeconds = [double]$config.QuickValidationSeconds
@@ -76,6 +79,10 @@ if ($AudioBoundaryRepairTailSeconds -le 0) {
 
 if ($AudioBoundaryRepairMaximumGapSeconds -lt 0) {
     throw "AudioBoundaryRepairMaximumGapSeconds cannot be negative in: $configPath"
+}
+
+if ($AudioBoundaryRepairCompensationSeconds -lt 0) {
+    throw "AudioBoundaryRepairCompensationSeconds cannot be negative in: $configPath"
 }
 
 if ($AudioBoundaryRepairFadeSeconds -lt 0) {
@@ -3126,7 +3133,10 @@ param(
             $AudioBoundaryRepairTailSeconds,
             $availableDuration
         )
-        $tailOutputDuration = $tailInputDuration + $missingDuration
+        $tailOutputDuration =
+            $tailInputDuration +
+            $missingDuration +
+            $AudioBoundaryRepairCompensationSeconds
         $tempo = 1.0
         if ($tailOutputDuration -gt 0) {
             $tempo = $tailInputDuration / $tailOutputDuration
@@ -3230,6 +3240,8 @@ param(
                     File = [IO.Path]::GetFileName($InputFile)
                     GapSeconds = $missingDuration
                     TailSeconds = $tailInputDuration
+                    CompensationSeconds =
+                        $AudioBoundaryRepairCompensationSeconds
                     Tempo = $tempo
                 }
             )
@@ -3566,6 +3578,11 @@ if ($audioParts.Count -gt 0) {
                 ) +
                 "s, tail=" +
                 $repair.TailSeconds.ToString(
+                    "0.000",
+                    [Globalization.CultureInfo]::InvariantCulture
+                ) +
+                "s, compensation=" +
+                $repair.CompensationSeconds.ToString(
                     "0.000",
                     [Globalization.CultureInfo]::InvariantCulture
                 ) +
