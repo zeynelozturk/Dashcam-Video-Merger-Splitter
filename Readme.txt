@@ -1,5 +1,4 @@
-These utilites focus on DF10 car dashcam, but it may work with others too.
-
+These utilites focus on Deepfly DF10 car dashcam, but it may work with others too.
 
 =================================
 Merge Dashcam videos.bat
@@ -12,11 +11,12 @@ The resulting video should have smooth playback without any skipping.
 
 Features
 
-- Internally sorts dragged files by modified date.
-- Compares overlapping frames via hash check.
-- Adds audio if it exists (default).
-- Offers the option to exclude audio.
-- Ignores missing audio.
+- Sorts dragged files by modification date.
+- Detects overlapping frames using hashes and creates smooth video transitions at merge points.
+- Repairs short audio gaps by extending the final few seconds of audio without changing its pitch.
+- Includes available audio by default.
+- Provides an option to exclude audio.
+- Handles files without audio.
 
 Usage
 
