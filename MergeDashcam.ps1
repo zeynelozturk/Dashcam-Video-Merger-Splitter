@@ -15,7 +15,8 @@ $ffmpeg  = "ffmpeg.exe"
 $ffprobe = "ffprobe.exe"
 
 $MinimumMatchFrames = 5
-$FrameRate = "29.83"
+$FrameRate = "30"
+$FrameRateWarningDifference = 3.0
 $UseParallelFrameHashing = $true
 $ParallelFrameHashWorkers = 5
 $UseParallelAudioMetadata = $true
@@ -186,6 +187,43 @@ function Invoke-FFprobe {
     }
 
     return $result
+}
+
+function Get-DetectedVideoFrameRate {
+    param(
+        [string]$File
+    )
+
+    $rateText = (
+        @(
+            Invoke-FFprobe @(
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=avg_frame_rate",
+                "-of", "default=nw=1:nk=1",
+                $File
+            )
+        ) -join ""
+    ).Trim()
+
+    if ($rateText -notmatch '^([0-9]+(?:\.[0-9]+)?)/([0-9]+(?:\.[0-9]+)?)$') {
+        return $null
+    }
+
+    $numerator = [double]::Parse(
+        $Matches[1],
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $denominator = [double]::Parse(
+        $Matches[2],
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+
+    if ($numerator -le 0 -or $denominator -le 0) {
+        return $null
+    }
+
+    return $numerator / $denominator
 }
 
 function Test-QuickVideoValidity {
@@ -1733,6 +1771,49 @@ try {
 
         if ($Files.Count -lt 2) {
             throw "Not enough valid files remain after skipping invalid files. Need at least 2."
+        }
+    }
+
+    $detectedFrameRate = Get-DetectedVideoFrameRate $Files[0]
+    if (
+        $null -ne $detectedFrameRate -and
+        [Math]::Abs($detectedFrameRate - [double]$FrameRate) -gt
+            $FrameRateWarningDifference
+    ) {
+        $detectedFrameRateText = $detectedFrameRate.ToString(
+            "0.###",
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+
+        Write-Host ""
+        Write-Host "WARNING: The first video reports $detectedFrameRateText fps."
+        Write-Host "The merger is configured to use $FrameRate fps."
+        Write-Host (
+            "If $detectedFrameRateText fps is the video's real frame rate, " +
+            'update $FrameRate near the top of MergeDashcam.ps1.'
+        )
+        Write-Host "Some damaged or incorrectly muxed files report the wrong rate."
+
+        $report.Add("")
+        $report.Add(
+            "WARNING: First video reports $detectedFrameRateText fps; " +
+            "configured rate is $FrameRate fps."
+        )
+
+        while ($true) {
+            $answer = Read-Host "Continue using $FrameRate fps anyway? [Y/N]"
+            if ([string]::IsNullOrWhiteSpace($answer)) {
+                continue
+            }
+
+            $normalized = $answer.Trim().ToUpperInvariant()
+            if ($normalized -eq "Y" -or $normalized -eq "YES") {
+                $report.Add("User continued using $FrameRate fps.")
+                break
+            }
+            if ($normalized -eq "N" -or $normalized -eq "NO") {
+                throw "Merge cancelled because the reported frame rate differs significantly."
+            }
         }
     }
 
