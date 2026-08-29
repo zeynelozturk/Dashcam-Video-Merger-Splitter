@@ -21,6 +21,8 @@ $requiredSettings = @(
     "FFmpegPath",
     "FFprobePath",
     "MinimumMatchFrames",
+    "RecordingFilePrefix",
+    "EventFilePrefix",
     "FrameRate",
     "FrameRateWarningDifference",
     "UseParallelFrameHashing",
@@ -41,6 +43,8 @@ foreach ($settingName in $requiredSettings) {
 $ffmpeg = [string]$config.FFmpegPath
 $ffprobe = [string]$config.FFprobePath
 $MinimumMatchFrames = [int]$config.MinimumMatchFrames
+$RecordingFilePrefix = [string]$config.RecordingFilePrefix
+$EventFilePrefix = [string]$config.EventFilePrefix
 $FrameRateValue = [double]$config.FrameRate
 $FrameRateWarningDifference = [double]$config.FrameRateWarningDifference
 $UseParallelFrameHashing = [bool]$config.UseParallelFrameHashing
@@ -53,6 +57,11 @@ $SuppressFFmpegConsoleOutput = [bool]$config.SuppressFFmpegConsoleOutput
 
 if ($FrameRateValue -le 0) {
     throw "FrameRate must be greater than zero in: $configPath"
+}
+
+if ([string]::IsNullOrWhiteSpace($RecordingFilePrefix) -or
+    [string]::IsNullOrWhiteSpace($EventFilePrefix)) {
+    throw "RecordingFilePrefix and EventFilePrefix cannot be empty in: $configPath"
 }
 
 $FrameRate = $FrameRateValue.ToString(
@@ -1345,6 +1354,7 @@ function Find-OverlapWithEventFallback {
         return [PSCustomObject]@{
             Result = $overlap
             IsEventOverlap = $false
+            IsDeepflyHandoff = $false
         }
     }
 
@@ -1352,14 +1362,30 @@ function Find-OverlapWithEventFallback {
     $previousName = [IO.Path]::GetFileName($PreviousFile)
     $currentName  = [IO.Path]::GetFileName($CurrentFile)
 
-    $isREC = $previousName -match '^REC2_'
-    $isEVT = $currentName -match '^EVT2_'
+    $previousIsRecording = $previousName.StartsWith(
+        $RecordingFilePrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    $previousIsEvent = $previousName.StartsWith(
+        $EventFilePrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    $currentIsRecording = $currentName.StartsWith(
+        $RecordingFilePrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    $currentIsEvent = $currentName.StartsWith(
+        $EventFilePrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )
 
     $previousFrameCount = @($PreviousHashes).Count
     $previousDuration =
         Get-VideoDurationFromFrames $previousFrameCount
 
-    if ($isREC -and $isEVT -and $previousDuration -le 10.0) {
+    if ($previousIsRecording -and
+        $currentIsEvent -and
+        $previousDuration -le 10.0) {
 
         Write-Host ""
         Write-Host "No normal boundary overlap."
@@ -1375,13 +1401,38 @@ function Find-OverlapWithEventFallback {
             return [PSCustomObject]@{
                 Result = $eventOverlap
                 IsEventOverlap = $true
+                IsDeepflyHandoff = $false
             }
+        }
+    }
+
+    $previousHashValues = @(Convert-ToStringArray $PreviousHashes)
+    $currentHashValues = @(Convert-ToStringArray $CurrentHashes)
+
+    # Deepfly DF10 behavior: an EVT file and the following REC file share
+    # exactly one boundary frame. Keep the normal multi-frame threshold for
+    # every other case, but remove this known one-frame handoff duplicate.
+    if ($previousIsEvent -and
+        $currentIsRecording -and
+        $previousHashValues.Count -gt 0 -and
+        $currentHashValues.Count -gt 0 -and
+        $previousHashValues[-1] -eq $currentHashValues[0]) {
+
+        return [PSCustomObject]@{
+            Result = [PSCustomObject]@{
+                Length = 1
+                AStart = $previousHashValues.Count - 1
+                BStart = 0
+            }
+            IsEventOverlap = $false
+            IsDeepflyHandoff = $true
         }
     }
 
     return [PSCustomObject]@{
         Result = $null
         IsEventOverlap = $false
+        IsDeepflyHandoff = $false
     }
 }
 
@@ -2245,7 +2296,13 @@ try {
         # ----------------------------------------------------
 
         Write-InfoBlank
-        if ($overlapInfo.IsEventOverlap) {
+        if ($overlapInfo.IsDeepflyHandoff) {
+            Write-Info (
+                "Deepfly DF10 EVT-to-REC handoff overlap: " +
+                "$($overlap.Length) frame"
+            )
+        }
+        elseif ($overlapInfo.IsEventOverlap) {
             Write-Info (
                 "Event overlap: $($overlap.Length) frames " +
                 "(REC tail is at start of EVT)"
@@ -2256,7 +2313,15 @@ try {
         }
 
         $report.Add("")
-        if ($overlapInfo.IsEventOverlap) {
+        if ($overlapInfo.IsDeepflyHandoff) {
+            $report.Add(
+                "Deepfly DF10 handoff between " +
+                "$([IO.Path]::GetFileName($Files[$i - 1])) and " +
+                "$([IO.Path]::GetFileName($Files[$i])): " +
+                "$($overlap.Length) duplicated boundary frame removed"
+            )
+        }
+        elseif ($overlapInfo.IsEventOverlap) {
             $report.Add(
                 "Event overlap between " +
                 "$([IO.Path]::GetFileName($Files[$i - 1])) and " +

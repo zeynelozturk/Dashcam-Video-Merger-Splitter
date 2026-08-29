@@ -34,6 +34,7 @@ Configuration
 - Keep the configuration file in the same folder as MergeDashcam.ps1.
 - FrameRate controls the playback rate of the merged video. The default is 30 fps.
 - FrameRateWarningDifference controls when an input frame-rate warning is shown.
+- RecordingFilePrefix and EventFilePrefix identify Deepfly DF10 recording and event files for its handoff rules.
 - The remaining settings control parallel processing, validation, and console output.
 
 =================================

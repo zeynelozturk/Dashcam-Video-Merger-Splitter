@@ -2,6 +2,9 @@
     FFmpegPath                   = "ffmpeg.exe"
     FFprobePath                  = "ffprobe.exe"
     MinimumMatchFrames           = 5
+    # Deepfly DF10 prefixes used for its event/recording handoff rules.
+    RecordingFilePrefix          = "REC2_"
+    EventFilePrefix              = "EVT2_"
     FrameRate                    = 30.0
     FrameRateWarningDifference   = 3.0
     UseParallelFrameHashing      = $true
