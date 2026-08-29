@@ -1430,6 +1430,43 @@ function Find-DeepflyOneGapOverlap {
     return $null
 }
 
+function Find-ContainedFrameSequence {
+    param(
+        $ContainerHashes,
+        $CandidateHashes
+    )
+
+    $container = @(Convert-ToStringArray $ContainerHashes)
+    $candidate = @(Convert-ToStringArray $CandidateHashes)
+
+    if ($candidate.Count -lt $MinimumMatchFrames -or
+        $candidate.Count -gt $container.Count) {
+        return $null
+    }
+
+    for ($start = 0;
+         $start -le $container.Count - $candidate.Count;
+         $start++) {
+        $match = $true
+
+        for ($offset = 0; $offset -lt $candidate.Count; $offset++) {
+            if ($container[$start + $offset] -ne $candidate[$offset]) {
+                $match = $false
+                break
+            }
+        }
+
+        if ($match) {
+            return [PSCustomObject]@{
+                Start = $start
+                Length = $candidate.Count
+            }
+        }
+    }
+
+    return $null
+}
+
 function Find-OverlapWithEventFallback {
     param(
         [string]$PreviousFile,
@@ -1542,6 +1579,88 @@ function Find-OverlapWithEventFallback {
         IsEventOverlap = $false
         IsDeepflyHandoff = $false
         IsDeepflyOneGapOverlap = $false
+    }
+}
+
+function Get-DeepflyContainedFilePlan {
+    param(
+        [string[]]$InputFiles,
+        [hashtable]$FrameHashes
+    )
+
+    $retainedIndices = New-Object System.Collections.Generic.List[int]
+    $skippedFiles = New-Object System.Collections.Generic.List[object]
+
+    for ($index = 0; $index -lt $InputFiles.Count; $index++) {
+        if ($index -eq 0 -or $index -eq $InputFiles.Count - 1) {
+            [void]$retainedIndices.Add($index)
+            continue
+        }
+
+        $previousIndex = $retainedIndices[$retainedIndices.Count - 1]
+        $nextIndex = $index + 1
+        $previousName = [IO.Path]::GetFileName($InputFiles[$previousIndex])
+        $candidateName = [IO.Path]::GetFileName($InputFiles[$index])
+        $nextName = [IO.Path]::GetFileName($InputFiles[$nextIndex])
+
+        $isDeepflyContainedCandidate = (
+            $previousName.StartsWith(
+                $EventFilePrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and
+            $candidateName.StartsWith(
+                $RecordingFilePrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and
+            $nextName.StartsWith(
+                $RecordingFilePrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        )
+
+        if (-not $isDeepflyContainedCandidate) {
+            [void]$retainedIndices.Add($index)
+            continue
+        }
+
+        # Deepfly DF10 can occasionally produce a short REC file containing
+        # only frames already present inside the preceding EVT. Skip it only
+        # when every frame is contained and bypassing it reconnects cleanly.
+        $containedSequence = Find-ContainedFrameSequence `
+            $FrameHashes[$previousIndex] `
+            $FrameHashes[$index]
+
+        if ($null -eq $containedSequence) {
+            [void]$retainedIndices.Add($index)
+            continue
+        }
+
+        $bypassOverlap = Find-OverlapWithEventFallback `
+            $InputFiles[$previousIndex] `
+            $InputFiles[$nextIndex] `
+            $FrameHashes[$previousIndex] `
+            $FrameHashes[$nextIndex]
+
+        if ($null -eq $bypassOverlap.Result) {
+            [void]$retainedIndices.Add($index)
+            continue
+        }
+
+        [void]$skippedFiles.Add(
+            [PSCustomObject]@{
+                Index = $index
+                PreviousIndex = $previousIndex
+                NextIndex = $nextIndex
+                ContainedStart = $containedSequence.Start
+                FrameCount = $containedSequence.Length
+                BypassOverlapLength = $bypassOverlap.Result.Length
+            }
+        )
+    }
+
+    return [PSCustomObject]@{
+        RetainedIndices = @($retainedIndices.ToArray())
+        SkippedFiles = @($skippedFiles.ToArray())
     }
 }
 
@@ -2281,6 +2400,81 @@ try {
     }
 
     Complete-StepProgress -Activity "Generating frame hashes"
+
+    $containedFilePlan = Get-DeepflyContainedFilePlan `
+        -InputFiles $Files `
+        -FrameHashes $hashes
+
+    if ($containedFilePlan.SkippedFiles.Count -gt 0) {
+        $originalFiles = @($Files)
+        $originalAudioAvailable = @($audioAvailable)
+        $originalAudioStreamIndices = @($audioStreamIndices)
+        $originalHashes = $hashes
+
+        foreach ($skippedFile in $containedFilePlan.SkippedFiles) {
+            $skippedName = [IO.Path]::GetFileName(
+                $originalFiles[$skippedFile.Index]
+            )
+            $containerName = [IO.Path]::GetFileName(
+                $originalFiles[$skippedFile.PreviousIndex]
+            )
+            $nextName = [IO.Path]::GetFileName(
+                $originalFiles[$skippedFile.NextIndex]
+            )
+            $containedEnd =
+                $skippedFile.ContainedStart + $skippedFile.FrameCount - 1
+
+            Write-Host ""
+            Write-Host "Skipping contained Deepfly DF10 file: $skippedName"
+            Write-Host (
+                "All $($skippedFile.FrameCount) frames already exist in " +
+                "$containerName at frames " +
+                "$($skippedFile.ContainedStart)-$containedEnd."
+            )
+            Write-Host (
+                "Bypass overlap with ${nextName}: " +
+                "$($skippedFile.BypassOverlapLength) frame(s)."
+            )
+
+            $report.Add("")
+            $report.Add(
+                "Skipped contained Deepfly DF10 file: $skippedName"
+            )
+            $report.Add(
+                "All $($skippedFile.FrameCount) frames already exist in " +
+                "$containerName at frames " +
+                "$($skippedFile.ContainedStart)-$containedEnd."
+            )
+            $report.Add(
+                "Bypass overlap with ${nextName}: " +
+                "$($skippedFile.BypassOverlapLength) frame(s)."
+            )
+        }
+
+        $retainedFiles = New-Object System.Collections.Generic.List[string]
+        $retainedAudioAvailable =
+            New-Object System.Collections.Generic.List[bool]
+        $retainedAudioStreamIndices =
+            New-Object System.Collections.Generic.List[int]
+        $retainedHashes = @{}
+
+        foreach ($oldIndex in $containedFilePlan.RetainedIndices) {
+            $newIndex = $retainedFiles.Count
+            [void]$retainedFiles.Add($originalFiles[$oldIndex])
+            [void]$retainedAudioAvailable.Add(
+                [bool]$originalAudioAvailable[$oldIndex]
+            )
+            [void]$retainedAudioStreamIndices.Add(
+                [int]$originalAudioStreamIndices[$oldIndex]
+            )
+            $retainedHashes[$newIndex] = @($originalHashes[$oldIndex])
+        }
+
+        $Files = [string[]]$retainedFiles.ToArray()
+        $audioAvailable = $retainedAudioAvailable
+        $audioStreamIndices = $retainedAudioStreamIndices
+        $hashes = $retainedHashes
+    }
 
     # ========================================================
     # Prepare H264 pieces
