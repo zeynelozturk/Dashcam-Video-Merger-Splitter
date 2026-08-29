@@ -11,6 +11,11 @@
     ParallelFrameHashWorkers     = 5
     UseParallelAudioMetadata     = $true
     ParallelAudioMetadataWorkers = 3
+    EnableAudioBoundaryRepair    = $true
+    AudioBoundaryRepairTailSeconds = 5.0
+    AudioBoundaryRepairMaximumGapSeconds = 1.0
+    AudioBoundaryRepairCompensationSeconds = 0.025
+    AudioBoundaryRepairFadeSeconds = 0.002
     QuickValidationSeconds       = 2.0
     MinimalConsoleOutput         = $true
     SuppressFFmpegConsoleOutput  = $true

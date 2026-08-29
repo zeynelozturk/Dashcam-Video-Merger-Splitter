@@ -29,6 +29,11 @@ $requiredSettings = @(
     "ParallelFrameHashWorkers",
     "UseParallelAudioMetadata",
     "ParallelAudioMetadataWorkers",
+    "EnableAudioBoundaryRepair",
+    "AudioBoundaryRepairTailSeconds",
+    "AudioBoundaryRepairMaximumGapSeconds",
+    "AudioBoundaryRepairCompensationSeconds",
+    "AudioBoundaryRepairFadeSeconds",
     "QuickValidationSeconds",
     "MinimalConsoleOutput",
     "SuppressFFmpegConsoleOutput"
@@ -51,12 +56,37 @@ $UseParallelFrameHashing = [bool]$config.UseParallelFrameHashing
 $ParallelFrameHashWorkers = [int]$config.ParallelFrameHashWorkers
 $UseParallelAudioMetadata = [bool]$config.UseParallelAudioMetadata
 $ParallelAudioMetadataWorkers = [int]$config.ParallelAudioMetadataWorkers
+$EnableAudioBoundaryRepair = [bool]$config.EnableAudioBoundaryRepair
+$AudioBoundaryRepairTailSeconds =
+    [double]$config.AudioBoundaryRepairTailSeconds
+$AudioBoundaryRepairMaximumGapSeconds =
+    [double]$config.AudioBoundaryRepairMaximumGapSeconds
+$AudioBoundaryRepairCompensationSeconds =
+    [double]$config.AudioBoundaryRepairCompensationSeconds
+$AudioBoundaryRepairFadeSeconds =
+    [double]$config.AudioBoundaryRepairFadeSeconds
 $QuickValidationSeconds = [double]$config.QuickValidationSeconds
 $MinimalConsoleOutput = [bool]$config.MinimalConsoleOutput
 $SuppressFFmpegConsoleOutput = [bool]$config.SuppressFFmpegConsoleOutput
 
 if ($FrameRateValue -le 0) {
     throw "FrameRate must be greater than zero in: $configPath"
+}
+
+if ($AudioBoundaryRepairTailSeconds -le 0) {
+    throw "AudioBoundaryRepairTailSeconds must be greater than zero in: $configPath"
+}
+
+if ($AudioBoundaryRepairMaximumGapSeconds -lt 0) {
+    throw "AudioBoundaryRepairMaximumGapSeconds cannot be negative in: $configPath"
+}
+
+if ($AudioBoundaryRepairCompensationSeconds -lt 0) {
+    throw "AudioBoundaryRepairCompensationSeconds cannot be negative in: $configPath"
+}
+
+if ($AudioBoundaryRepairFadeSeconds -lt 0) {
+    throw "AudioBoundaryRepairFadeSeconds cannot be negative in: $configPath"
 }
 
 if ([string]::IsNullOrWhiteSpace($RecordingFilePrefix) -or
@@ -2990,9 +3020,60 @@ Set-OverallProgress `
 $audioParts =
     New-Object System.Collections.Generic.List[string]
 
+$audioBoundaryRepairs =
+    New-Object System.Collections.Generic.List[object]
+
 # --------------------------------------------------------
-# Helper: create one audio segment
+# Helpers: inspect and create one audio segment
 # --------------------------------------------------------
+
+function Get-AudioPacketEndTime {
+param(
+    [string]$InputFile,
+    [int]$AudioStreamIndex
+)
+
+    $packetLines = @(
+        Invoke-FFprobe @(
+            "-v", "error",
+            "-select_streams", ([string]$AudioStreamIndex),
+            "-show_packets",
+            "-show_entries", "packet=pts_time,duration_time",
+            "-of", "csv=p=0",
+            $InputFile
+        )
+    )
+
+    $endTime = $null
+
+    foreach ($line in $packetLines) {
+        $parts = ([string]$line) -split ","
+        if ($parts.Count -lt 2) {
+            continue
+        }
+
+        try {
+            $packetStart = [double]::Parse(
+                $parts[0].Trim(),
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            $packetDuration = [double]::Parse(
+                $parts[1].Trim(),
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            $packetEnd = $packetStart + $packetDuration
+
+            if ($null -eq $endTime -or $packetEnd -gt $endTime) {
+                $endTime = $packetEnd
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    return $endTime
+}
 
 function Create-AudioSegment {
 param(
@@ -3034,6 +3115,140 @@ param(
                 [Globalization.CultureInfo]::InvariantCulture
             )
 
+        $audioEndTime = Get-AudioPacketEndTime `
+            $InputFile `
+            $AudioStreamIndex
+
+        $availableDuration = 0.0
+        if ($null -ne $audioEndTime) {
+            $availableDuration = [Math]::Max(
+                0.0,
+                [double]$audioEndTime - $StartTime
+            )
+        }
+
+        $missingDuration = $Duration - $availableDuration
+        $repairMinimumSeconds = 0.001
+        $tailInputDuration = [Math]::Min(
+            $AudioBoundaryRepairTailSeconds,
+            $availableDuration
+        )
+        $tailOutputDuration =
+            $tailInputDuration +
+            $missingDuration +
+            $AudioBoundaryRepairCompensationSeconds
+        $tempo = 1.0
+        if ($tailOutputDuration -gt 0) {
+            $tempo = $tailInputDuration / $tailOutputDuration
+        }
+        $canRepairBoundary = (
+            $EnableAudioBoundaryRepair -and
+            $availableDuration -gt $repairMinimumSeconds -and
+            $missingDuration -gt $repairMinimumSeconds -and
+            $missingDuration -le $AudioBoundaryRepairMaximumGapSeconds -and
+            $tempo -ge 0.5
+        )
+
+        $fadeDuration = [Math]::Min(
+            $AudioBoundaryRepairFadeSeconds,
+            $Duration / 2.0
+        )
+        $fadeText = $fadeDuration.ToString(
+            "0.000000",
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $fadeOutStartText = ($Duration - $fadeDuration).ToString(
+            "0.000000",
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+
+        if ($canRepairBoundary) {
+            $headDuration = $availableDuration - $tailInputDuration
+
+            $availableText = $availableDuration.ToString(
+                "0.000000",
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            $headText = $headDuration.ToString(
+                "0.000000",
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            $tempoText = $tempo.ToString(
+                "0.000000",
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+
+            if ($headDuration -gt $repairMinimumSeconds) {
+                $repairFilter = (
+                    "[0:$AudioStreamIndex]" +
+                    "atrim=duration=$availableText," +
+                    "asetpts=PTS-STARTPTS,asplit=2[headsrc][tailsrc];" +
+                    "[headsrc]atrim=duration=$headText," +
+                    "asetpts=PTS-STARTPTS[head];" +
+                    "[tailsrc]atrim=start=$headText," +
+                    "asetpts=PTS-STARTPTS,atempo=$tempoText[tail];" +
+                    "[head][tail]concat=n=2:v=0:a=1," +
+                    "apad=whole_dur=$durationText," +
+                    "atrim=duration=$durationText," +
+                    "afade=t=in:st=0:d=$fadeText," +
+                    "afade=t=out:st=${fadeOutStartText}:d=$fadeText[out]"
+                )
+            }
+            else {
+                $repairFilter = (
+                    "[0:$AudioStreamIndex]" +
+                    "atrim=duration=$availableText," +
+                    "asetpts=PTS-STARTPTS," +
+                    "atempo=$tempoText," +
+                    "apad=whole_dur=$durationText," +
+                    "atrim=duration=$durationText," +
+                    "afade=t=in:st=0:d=$fadeText," +
+                    "afade=t=out:st=${fadeOutStartText}:d=$fadeText[out]"
+                )
+            }
+
+            Write-Info (
+                "Audio boundary repair: stretched final " +
+                $tailInputDuration.ToString(
+                    "0.000",
+                    [Globalization.CultureInfo]::InvariantCulture
+                ) +
+                "s to fill " +
+                $missingDuration.ToString(
+                    "0.000",
+                    [Globalization.CultureInfo]::InvariantCulture
+                ) +
+                "s"
+            )
+
+            Run-FFmpeg @(
+                "-y",
+                "-ss", $startText,
+                "-i", $InputFile,
+                "-filter_complex", $repairFilter,
+                "-map", "[out]",
+                "-vn",
+                "-sn",
+                "-dn",
+                "-t", $durationText,
+                "-c:a", "pcm_s16le",
+                $OutputFile
+            )
+
+            [void]$audioBoundaryRepairs.Add(
+                [PSCustomObject]@{
+                    File = [IO.Path]::GetFileName($InputFile)
+                    GapSeconds = $missingDuration
+                    TailSeconds = $tailInputDuration
+                    CompensationSeconds =
+                        $AudioBoundaryRepairCompensationSeconds
+                    Tempo = $tempo
+                }
+            )
+
+            return
+        }
+
         Run-FFmpeg @(
             "-y",
             "-ss", $startText,
@@ -3043,7 +3258,12 @@ param(
             "-sn",
             "-dn",
             "-af",
-            "apad=whole_dur=$durationText,atrim=duration=$durationText",
+            (
+                "apad=whole_dur=$durationText," +
+                "atrim=duration=$durationText," +
+                "afade=t=in:st=0:d=$fadeText," +
+                "afade=t=out:st=${fadeOutStartText}:d=$fadeText"
+            ),
             "-t", $durationText,
             "-c:a", "pcm_s16le",
             $OutputFile
@@ -3344,6 +3564,36 @@ if ($audioParts.Count -gt 0) {
     $report.Add(
         "Audio segments were individually padded/trimmed to match video."
     )
+    if ($audioBoundaryRepairs.Count -gt 0) {
+        $report.Add(
+            "Short audio boundary gaps repaired: " +
+            $audioBoundaryRepairs.Count
+        )
+        foreach ($repair in $audioBoundaryRepairs) {
+            $report.Add(
+                "Audio repair: $($repair.File), gap=" +
+                $repair.GapSeconds.ToString(
+                    "0.000",
+                    [Globalization.CultureInfo]::InvariantCulture
+                ) +
+                "s, tail=" +
+                $repair.TailSeconds.ToString(
+                    "0.000",
+                    [Globalization.CultureInfo]::InvariantCulture
+                ) +
+                "s, compensation=" +
+                $repair.CompensationSeconds.ToString(
+                    "0.000",
+                    [Globalization.CultureInfo]::InvariantCulture
+                ) +
+                "s, tempo=" +
+                $repair.Tempo.ToString(
+                    "0.000000",
+                    [Globalization.CultureInfo]::InvariantCulture
+                )
+            )
+        }
+    }
 
     Set-StepProgress `
         -Activity "Finalizing audio" `
