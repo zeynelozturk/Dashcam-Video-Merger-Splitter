@@ -20,6 +20,8 @@ $UseParallelFrameHashing = $true
 $ParallelFrameHashWorkers = 5
 $UseParallelAudioMetadata = $true
 $ParallelAudioMetadataWorkers = 3
+$MinimalConsoleOutput = $true
+$SuppressFFmpegConsoleOutput = $true
 
 # ============================================================
 # Helpers
@@ -30,10 +32,135 @@ function Run-FFmpeg {
         [string[]]$Arguments
     )
 
-    & $ffmpeg @Arguments
+    if (-not $SuppressFFmpegConsoleOutput) {
+        $previousErrorActionPreference = $ErrorActionPreference
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "FFmpeg failed with exit code $LASTEXITCODE"
+        try {
+            $ErrorActionPreference = "Continue"
+            & $ffmpeg @Arguments
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+
+        if ($exitCode -ne 0) {
+            throw "FFmpeg failed with exit code $exitCode"
+        }
+
+        return
+    }
+
+    $quietArguments = @(
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostats"
+    ) + @($Arguments)
+
+    $stdoutLog = Join-Path $env:TEMP (
+        "dashcam_ffmpeg_stdout_" + [guid]::NewGuid().ToString("N") + ".log"
+    )
+    $stderrLog = Join-Path $env:TEMP (
+        "dashcam_ffmpeg_stderr_" + [guid]::NewGuid().ToString("N") + ".log"
+    )
+
+    $commandText = ($Arguments -join " ")
+    $previousErrorActionPreference = $ErrorActionPreference
+
+    try {
+        try {
+            $ErrorActionPreference = "Continue"
+            & $ffmpeg @quietArguments 1>$stdoutLog 2>$stderrLog
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+
+        if ($exitCode -ne 0) {
+            $stderrLines = @()
+            $stdoutLines = @()
+
+            if (Test-Path -LiteralPath $stderrLog -PathType Leaf) {
+                $stderrLines = @(
+                    Get-Content -LiteralPath $stderrLog -ErrorAction SilentlyContinue
+                )
+            }
+
+            if (Test-Path -LiteralPath $stdoutLog -PathType Leaf) {
+                $stdoutLines = @(
+                    Get-Content -LiteralPath $stdoutLog -ErrorAction SilentlyContinue
+                )
+            }
+
+            $lines = @(
+                @($stderrLines) + @($stdoutLines) |
+                    ForEach-Object { [string]$_ } |
+                    Where-Object {
+                        -not [string]::IsNullOrWhiteSpace($_)
+                    }
+            )
+
+            $detailText = ($lines -join [Environment]::NewLine)
+            $knownCorruptAudioIssue = (
+                $detailText -match "mp3float" -or
+                $detailText -match "Header missing" -or
+                $detailText -match "Invalid data found when processing input" -or
+                $detailText -match "Error while decoding stream"
+            )
+
+            $outputCandidate = $null
+            if ($Arguments.Count -gt 0) {
+                $lastArgument = [string]$Arguments[$Arguments.Count - 1]
+                if (-not [string]::IsNullOrWhiteSpace($lastArgument) -and
+                    $lastArgument -ne "-") {
+                    $outputCandidate = $lastArgument
+                }
+            }
+
+            $hasUsableOutput = $false
+            if (-not [string]::IsNullOrWhiteSpace($outputCandidate)) {
+                try {
+                    if (Test-Path -LiteralPath $outputCandidate -PathType Leaf) {
+                        $hasUsableOutput = (
+                            (Get-Item -LiteralPath $outputCandidate).Length -gt 0
+                        )
+                    }
+                }
+                catch {
+                    $hasUsableOutput = $false
+                }
+            }
+
+            if ($knownCorruptAudioIssue -and $hasUsableOutput) {
+                Write-Host ""
+                Write-Host (
+                    "WARNING: FFmpeg reported corrupt audio packets, " +
+                    "but usable output was produced. Continuing."
+                )
+                return
+            }
+
+            if ($lines.Count -gt 0) {
+                throw (
+                    "FFmpeg failed with exit code $exitCode" +
+                    [Environment]::NewLine +
+                    "Command: $commandText" +
+                    [Environment]::NewLine +
+                    ($lines -join [Environment]::NewLine)
+                )
+            }
+
+            throw (
+                "FFmpeg failed with exit code $exitCode" +
+                [Environment]::NewLine +
+                "Command: $commandText"
+            )
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutLog -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrLog -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -42,11 +169,20 @@ function Invoke-FFprobe {
         [string[]]$Arguments
     )
 
-    # Some dashcam AVIs contain a broken/empty MP3 stream. FFprobe can
-    # still return valid information for the requested stream (especially
-    # video) but exits non-zero because it encountered that unrelated
-    # broken stream. Do not treat that probe warning as a fatal error.
-    $result = @(& $ffprobe @Arguments 2>$null)
+    $previousErrorActionPreference = $ErrorActionPreference
+
+    try {
+        $ErrorActionPreference = "Continue"
+
+        # Some dashcam AVIs contain a broken/empty MP3 stream. FFprobe can
+        # still return valid information for the requested stream (especially
+        # video) but exits non-zero because it encountered that unrelated
+        # broken stream. Do not treat that probe warning as a fatal error.
+        $result = @(& $ffprobe @Arguments 2>$null)
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     return $result
 }
@@ -136,6 +272,26 @@ function Complete-AllProgress {
 
     Write-Progress -Id 2 -Activity "Current step" -Completed
     Write-Progress -Id 1 -Activity "Dashcam merge overall progress" -Completed
+}
+
+function Write-Info {
+    param(
+        [string]$Message
+    )
+
+    if ($MinimalConsoleOutput) {
+        return
+    }
+
+    Write-Host $Message
+}
+
+function Write-InfoBlank {
+    if ($MinimalConsoleOutput) {
+        return
+    }
+
+    Write-Host ""
 }
 
 function Join-BinaryFiles {
@@ -1405,8 +1561,8 @@ try {
         $Files.Count -gt 1
     ) {
         try {
-            Write-Host ""
-            Write-Host (
+            Write-InfoBlank
+            Write-Info (
                 "Reading audio metadata in parallel " +
                 "($ParallelAudioMetadataWorkers workers)..."
             )
@@ -1468,7 +1624,7 @@ try {
         [void]$audioStreamIndices.Add($audioStreamIndex)
 
         if ($hasAudio) {
-            Write-Host (
+            Write-Info (
                 "Audio: YES  " +
                 "stream=$audioStreamIndex  " +
                 "$([IO.Path]::GetFileName($file))"
@@ -1479,7 +1635,7 @@ try {
             )
         }
         else {
-            Write-Host "Audio: NO   $([IO.Path]::GetFileName($file))"
+            Write-Info "Audio: NO   $([IO.Path]::GetFileName($file))"
             $report.Add(
                 "Audio: NO   $([IO.Path]::GetFileName($file))"
             )
@@ -1515,8 +1671,8 @@ try {
         $Files.Count -gt 1
     ) {
         try {
-            Write-Host ""
-            Write-Host (
+            Write-InfoBlank
+            Write-Info (
                 "Creating frame hashes in parallel " +
                 "($ParallelFrameHashWorkers workers)..."
             )
@@ -1531,10 +1687,10 @@ try {
             for ($i = 0; $i -lt $Files.Count; $i++) {
                 $hashes[$i] = @($parallelHashes[$i])
 
-                Write-Host ""
-                Write-Host "Creating frame hashes:"
-                Write-Host "  $([IO.Path]::GetFileName($Files[$i]))"
-                Write-Host "  Frames: $(@($hashes[$i]).Count)"
+                Write-InfoBlank
+                Write-Info "Creating frame hashes:"
+                Write-Info "  $([IO.Path]::GetFileName($Files[$i]))"
+                Write-Info "  Frames: $(@($hashes[$i]).Count)"
             }
 
             $usedParallelFrameHashing = $true
@@ -1573,13 +1729,13 @@ try {
 
         for ($i = 0; $i -lt $Files.Count; $i++) {
 
-            Write-Host ""
-            Write-Host "Creating frame hashes:"
-            Write-Host "  $([IO.Path]::GetFileName($Files[$i]))"
+            Write-InfoBlank
+            Write-Info "Creating frame hashes:"
+            Write-Info "  $([IO.Path]::GetFileName($Files[$i]))"
 
             $hashes[$i] = Get-FrameHashes $Files[$i]
 
-            Write-Host "  Frames: $(@($hashes[$i]).Count)"
+            Write-Info "  Frames: $(@($hashes[$i]).Count)"
 
             $hashProcessedCount++
             $hashPercent = 100.0 * $hashProcessedCount / $hashTotalCount
@@ -1617,8 +1773,8 @@ try {
 
     $firstH264 = Join-Path $tempRoot "video_000.h264"
 
-    Write-Host ""
-    Write-Host "Extracting first video..."
+    Write-InfoBlank
+    Write-Info "Extracting first video..."
 
     Run-FFmpeg @(
         "-y",
@@ -1652,11 +1808,11 @@ try {
                 -Status "Pairs: 0/$pairTotalCount"
         }
 
-        Write-Host ""
-        Write-Host "=========================================="
-        Write-Host "Processing:"
-        Write-Host $Files[$i]
-        Write-Host "=========================================="
+        Write-InfoBlank
+        Write-Info "=========================================="
+        Write-Info "Processing:"
+        Write-Info $Files[$i]
+        Write-Info "=========================================="
 
         $previousHashes = $hashes[$i - 1]
         $currentHashes  = $hashes[$i]
@@ -1726,15 +1882,15 @@ try {
         # OVERLAP FOUND
         # ----------------------------------------------------
 
-        Write-Host ""
+        Write-InfoBlank
         if ($overlapInfo.IsEventOverlap) {
-            Write-Host (
+            Write-Info (
                 "Event overlap: $($overlap.Length) frames " +
                 "(REC tail is at start of EVT)"
             )
         }
         else {
-            Write-Host "Overlap: $($overlap.Length) frames"
+            Write-Info "Overlap: $($overlap.Length) frames"
         }
 
         $report.Add("")
@@ -1764,14 +1920,14 @@ try {
 
         $frames = @($fileMetadataCache[$frameCacheKey].Frames)
 
-        Write-Host "Current file frames: $($frames.Count)"
-        Write-Host "Overlap starts at current-file frame: $($overlap.BStart)"
-        Write-Host "Overlap length: $($overlap.Length)"
+        Write-Info "Current file frames: $($frames.Count)"
+        Write-Info "Overlap starts at current-file frame: $($overlap.BStart)"
+        Write-Info "Overlap length: $($overlap.Length)"
 
         $firstNewFrame =
             $overlap.BStart + $overlap.Length
 
-        Write-Host "First new frame: $firstNewFrame"
+        Write-Info "First new frame: $firstNewFrame"
 
         # ----------------------------------------------------
         # Entire file is overlap
@@ -1779,9 +1935,9 @@ try {
 
         if ($firstNewFrame -ge $frames.Count) {
 
-            Write-Host ""
-            Write-Host "Entire current file is overlap."
-            Write-Host "Nothing will be appended."
+            Write-InfoBlank
+            Write-Info "Entire current file is overlap."
+            Write-Info "Nothing will be appended."
 
             $report.Add(
                 "Entire file was overlap; nothing appended."
@@ -1833,12 +1989,12 @@ try {
         $transitionFrames =
             $keyFrame - $firstNewFrame
 
-        Write-Host ""
-        Write-Host "First new frame : $firstNewFrame"
-        Write-Host "Next I-frame    : $keyFrame"
-        Write-Host "Transition frames: $transitionFrames"
-        Write-Host "Transition start: $startTime"
-        Write-Host "Next I-frame    : $keyTime"
+        Write-InfoBlank
+        Write-Info "First new frame : $firstNewFrame"
+        Write-Info "Next I-frame    : $keyFrame"
+        Write-Info "Transition frames: $transitionFrames"
+        Write-Info "Transition start: $startTime"
+        Write-Info "Next I-frame    : $keyTime"
 
         # ----------------------------------------------------
         # Re-encode tiny transition
@@ -1852,8 +2008,8 @@ try {
 
             $duration = $keyTime - $startTime
 
-            Write-Host ""
-            Write-Host (
+            Write-InfoBlank
+            Write-Info (
                 "Re-encoding only " +
                 "$transitionFrames transition frames..."
             )
@@ -1889,8 +2045,8 @@ try {
             "rest_{0:D3}.avi" -f $i
         )
 
-        Write-Host ""
-        Write-Host "Copying original H.264 from I-frame onward..."
+        Write-InfoBlank
+        Write-Info "Copying original H.264 from I-frame onward..."
 
         Run-FFmpeg @(
             "-y",
@@ -2086,7 +2242,7 @@ param(
 
     if ($HasAudio) {
 
-        Write-Host (
+        Write-Info (
             "Audio: " +
             [IO.Path]::GetFileName($InputFile) +
             " start=" +
@@ -2121,7 +2277,7 @@ param(
     }
     else {
 
-        Write-Host (
+        Write-Info (
             "Audio: NO AUDIO - inserting " +
             $durationText +
             " seconds of silence"
@@ -2224,7 +2380,7 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
     # Entire file was already present
     if ($newFrameCount -le 0) {
 
-        Write-Host (
+        Write-Info (
             "Audio: " +
             [IO.Path]::GetFileName($Files[$i]) +
             " contributes no video frames."
