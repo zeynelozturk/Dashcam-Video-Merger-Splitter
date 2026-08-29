@@ -2551,8 +2551,10 @@ try {
         if ($null -eq $overlap) {
 
             Write-Host ""
-            Write-Host "WARNING: No overlap found."
-            Write-Host "Appending entire file."
+            Write-Host "WARNING: No overlap between:"
+            Write-Host "  $([IO.Path]::GetFileName($Files[$i - 1]))"
+            Write-Host "  $([IO.Path]::GetFileName($Files[$i]))"
+            Write-Host "Appending entire current file."
 
             $report.Add("")
             $report.Add(
