@@ -1340,6 +1340,96 @@ function Find-EventPrefixOverlap {
     return $null
 }
 
+function Find-DeepflyOneGapOverlap {
+    param(
+        $A,
+        $B
+    )
+
+    $A = @(Convert-ToStringArray $A)
+    $B = @(Convert-ToStringArray $B)
+
+    # Deepfly DF10 behavior: REC and EVT normally share an exact boundary,
+    # but the camera can occasionally include one additional frame in only
+    # one file. Require exact matches on both sides of that single-frame gap.
+    for ($aStart = 0; $aStart -lt $A.Count; $aStart++) {
+        $aLength = $A.Count - $aStart
+
+        # One extra frame in EVT (the current file).
+        if ($aLength + 1 -le $B.Count) {
+            $beforeGap = 0
+            while ($beforeGap -lt $aLength -and
+                $A[$aStart + $beforeGap] -eq $B[$beforeGap]) {
+                $beforeGap++
+            }
+
+            $afterGap = $aLength - $beforeGap
+            if ($beforeGap -ge $MinimumMatchFrames -and
+                $afterGap -ge $MinimumMatchFrames) {
+
+                $match = $true
+                for ($offset = $beforeGap;
+                     $offset -lt $aLength;
+                     $offset++) {
+                    if ($A[$aStart + $offset] -ne $B[$offset + 1]) {
+                        $match = $false
+                        break
+                    }
+                }
+
+                if ($match) {
+                    return [PSCustomObject]@{
+                        Length = $aLength + 1
+                        AStart = $aStart
+                        BStart = 0
+                        MatchedFrames = $aLength
+                        ExtraFrameIn = "EVT"
+                        GapIndex = $beforeGap
+                    }
+                }
+            }
+        }
+
+        # One extra frame in REC (the previous file).
+        if ($aLength - 1 -le $B.Count -and
+            $aLength - 1 -ge 2 * $MinimumMatchFrames) {
+            $beforeGap = 0
+            while ($beforeGap -lt $aLength - 1 -and
+                $A[$aStart + $beforeGap] -eq $B[$beforeGap]) {
+                $beforeGap++
+            }
+
+            $afterGap = $aLength - $beforeGap - 1
+            if ($beforeGap -ge $MinimumMatchFrames -and
+                $afterGap -ge $MinimumMatchFrames) {
+
+                $match = $true
+                for ($offset = $beforeGap;
+                     $offset -lt $aLength - 1;
+                     $offset++) {
+                    if ($A[$aStart + $offset + 1] -ne $B[$offset]) {
+                        $match = $false
+                        break
+                    }
+                }
+
+                if ($match) {
+                    return [PSCustomObject]@{
+                        Length = $aLength - 1
+                        AStart = $aStart
+                        BStart = 0
+                        MatchedFrames = $aLength - 1
+                        ExtraFrameIn = "REC"
+                        GapIndex = $beforeGap
+                    }
+                }
+            }
+        }
+    }
+
+    return $null
+}
+
 function Find-OverlapWithEventFallback {
     param(
         [string]$PreviousFile,
@@ -1355,6 +1445,7 @@ function Find-OverlapWithEventFallback {
             Result = $overlap
             IsEventOverlap = $false
             IsDeepflyHandoff = $false
+            IsDeepflyOneGapOverlap = $false
         }
     }
 
@@ -1402,12 +1493,28 @@ function Find-OverlapWithEventFallback {
                 Result = $eventOverlap
                 IsEventOverlap = $true
                 IsDeepflyHandoff = $false
+                IsDeepflyOneGapOverlap = $false
             }
         }
     }
 
     $previousHashValues = @(Convert-ToStringArray $PreviousHashes)
     $currentHashValues = @(Convert-ToStringArray $CurrentHashes)
+
+    if ($previousIsRecording -and $currentIsEvent) {
+        $oneGapOverlap = Find-DeepflyOneGapOverlap `
+            $previousHashValues `
+            $currentHashValues
+
+        if ($null -ne $oneGapOverlap) {
+            return [PSCustomObject]@{
+                Result = $oneGapOverlap
+                IsEventOverlap = $true
+                IsDeepflyHandoff = $false
+                IsDeepflyOneGapOverlap = $true
+            }
+        }
+    }
 
     # Deepfly DF10 behavior: an EVT file and the following REC file share
     # exactly one boundary frame. Keep the normal multi-frame threshold for
@@ -1426,6 +1533,7 @@ function Find-OverlapWithEventFallback {
             }
             IsEventOverlap = $false
             IsDeepflyHandoff = $true
+            IsDeepflyOneGapOverlap = $false
         }
     }
 
@@ -1433,6 +1541,7 @@ function Find-OverlapWithEventFallback {
         Result = $null
         IsEventOverlap = $false
         IsDeepflyHandoff = $false
+        IsDeepflyOneGapOverlap = $false
     }
 }
 
@@ -2296,7 +2405,14 @@ try {
         # ----------------------------------------------------
 
         Write-InfoBlank
-        if ($overlapInfo.IsDeepflyHandoff) {
+        if ($overlapInfo.IsDeepflyOneGapOverlap) {
+            Write-Info (
+                "Deepfly DF10 REC-to-EVT overlap: " +
+                "$($overlap.MatchedFrames) matching frames, " +
+                "1 extra $($overlap.ExtraFrameIn) frame"
+            )
+        }
+        elseif ($overlapInfo.IsDeepflyHandoff) {
             Write-Info (
                 "Deepfly DF10 EVT-to-REC handoff overlap: " +
                 "$($overlap.Length) frame"
@@ -2313,7 +2429,16 @@ try {
         }
 
         $report.Add("")
-        if ($overlapInfo.IsDeepflyHandoff) {
+        if ($overlapInfo.IsDeepflyOneGapOverlap) {
+            $report.Add(
+                "Deepfly DF10 REC-to-EVT overlap between " +
+                "$([IO.Path]::GetFileName($Files[$i - 1])) and " +
+                "$([IO.Path]::GetFileName($Files[$i])): " +
+                "$($overlap.MatchedFrames) matching frames, " +
+                "1 extra $($overlap.ExtraFrameIn) frame"
+            )
+        }
+        elseif ($overlapInfo.IsDeepflyHandoff) {
             $report.Add(
                 "Deepfly DF10 handoff between " +
                 "$([IO.Path]::GetFileName($Files[$i - 1])) and " +
