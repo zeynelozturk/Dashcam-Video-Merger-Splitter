@@ -1553,24 +1553,50 @@ function Find-OverlapWithEventFallback {
         }
     }
 
-    # Deepfly DF10 behavior: an EVT file and the following REC file share
-    # exactly one boundary frame. Keep the normal multi-frame threshold for
-    # every other case, but remove this known one-frame handoff duplicate.
+    # Deepfly DF10 behavior: an EVT file and the following REC file can share
+    # only a few boundary frames. Keep the normal threshold for every other
+    # case, but accept the longest exact DF10 handoff below that threshold.
     if ($previousIsEvent -and
         $currentIsRecording -and
         $previousHashValues.Count -gt 0 -and
-        $currentHashValues.Count -gt 0 -and
-        $previousHashValues[-1] -eq $currentHashValues[0]) {
+        $currentHashValues.Count -gt 0) {
 
-        return [PSCustomObject]@{
-            Result = [PSCustomObject]@{
-                Length = 1
-                AStart = $previousHashValues.Count - 1
-                BStart = 0
+        $maximumHandoffLength = [Math]::Min(
+            $MinimumMatchFrames - 1,
+            [Math]::Min(
+                $previousHashValues.Count,
+                $currentHashValues.Count
+            )
+        )
+
+        for ($handoffLength = $maximumHandoffLength;
+             $handoffLength -ge 1;
+             $handoffLength--) {
+            $handoffStart = $previousHashValues.Count - $handoffLength
+            $handoffMatches = $true
+
+            for ($offset = 0; $offset -lt $handoffLength; $offset++) {
+                if ($previousHashValues[$handoffStart + $offset] -ne
+                    $currentHashValues[$offset]) {
+                    $handoffMatches = $false
+                    break
+                }
             }
-            IsEventOverlap = $false
-            IsDeepflyHandoff = $true
-            IsDeepflyOneGapOverlap = $false
+
+            if (-not $handoffMatches) {
+                continue
+            }
+
+            return [PSCustomObject]@{
+                Result = [PSCustomObject]@{
+                    Length = $handoffLength
+                    AStart = $handoffStart
+                    BStart = 0
+                }
+                IsEventOverlap = $false
+                IsDeepflyHandoff = $true
+                IsDeepflyOneGapOverlap = $false
+            }
         }
     }
 
@@ -2611,7 +2637,7 @@ try {
         elseif ($overlapInfo.IsDeepflyHandoff) {
             Write-Info (
                 "Deepfly DF10 EVT-to-REC handoff overlap: " +
-                "$($overlap.Length) frame"
+                "$($overlap.Length) frame(s)"
             )
         }
         elseif ($overlapInfo.IsEventOverlap) {
@@ -2639,7 +2665,7 @@ try {
                 "Deepfly DF10 handoff between " +
                 "$([IO.Path]::GetFileName($Files[$i - 1])) and " +
                 "$([IO.Path]::GetFileName($Files[$i])): " +
-                "$($overlap.Length) duplicated boundary frame removed"
+                "$($overlap.Length) duplicated boundary frame(s) removed"
             )
         }
         elseif ($overlapInfo.IsEventOverlap) {
