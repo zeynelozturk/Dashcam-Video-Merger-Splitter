@@ -922,7 +922,7 @@ function Get-FileMetadataParallel {
             $finishedJob = Wait-Job -Job $jobsToWait -Any
 
             if ($null -eq $finishedJob) {
-                throw "Parallel audio metadata generation failed unexpectedly."
+                throw "Parallel media metadata generation failed unexpectedly."
             }
 
             $jobEntry =
@@ -942,14 +942,14 @@ function Get-FileMetadataParallel {
 
             if ($finishedJob.State -ne "Completed") {
                 throw (
-                    "Parallel audio metadata worker failed for: " +
+                    "Parallel media metadata worker failed for: " +
                     $jobEntry.File
                 )
             }
 
             if ($null -eq $jobResult) {
                 throw (
-                    "Parallel audio metadata worker returned no data for: " +
+                    "Parallel media metadata worker returned no data for: " +
                     $jobEntry.File
                 )
             }
@@ -976,7 +976,7 @@ function Get-FileMetadataParallel {
                     Set-OverallProgress `
                         -Stage $ProgressStage `
                         -PercentComplete $stepPercent `
-                        -Status "Audio metadata: $completedCount/$($files.Count)"
+                        -Status "Media metadata: $completedCount/$($files.Count)"
                 }
             }
         }
@@ -999,7 +999,7 @@ function Get-FileMetadataParallel {
 
     for ($i = 0; $i -lt $files.Count; $i++) {
         if (-not $results.ContainsKey($i)) {
-            throw "Missing audio metadata result for file index $i"
+            throw "Missing media metadata result for file index $i"
         }
     }
 
@@ -2188,7 +2188,7 @@ try {
     $overlapCache = @{}
 
     # ========================================================
-    # Detect audio
+    # Read media metadata
     # ========================================================
 
     $audioAvailable =
@@ -2204,7 +2204,7 @@ try {
         try {
             Write-InfoBlank
             Write-Info (
-                "Reading audio metadata in parallel " +
+                "Reading media metadata in parallel " +
                 "($ParallelAudioMetadataWorkers workers)..."
             )
 
@@ -2213,7 +2213,7 @@ try {
                 -WorkerCount $ParallelAudioMetadataWorkers `
                 -FfprobePath $ffprobe `
                 -ProgressStage "AudioMetadata" `
-                -ProgressActivity "Detecting audio metadata"
+                -ProgressActivity "Reading media metadata"
 
             for ($i = 0; $i -lt $Files.Count; $i++) {
                 $metadataCacheKey = [IO.Path]::GetFullPath($Files[$i])
@@ -2224,13 +2224,13 @@ try {
         catch {
             Write-Host ""
             Write-Host (
-                "Parallel audio metadata failed; " +
+                "Parallel media metadata failed; " +
                 "falling back to sequential mode."
             )
 
             $report.Add("")
             $report.Add(
-                "Parallel audio metadata failed; used sequential fallback."
+                "Parallel media metadata failed; used sequential fallback."
             )
         }
     }
@@ -2239,14 +2239,14 @@ try {
     $audioTotalCount = [Math]::Max(1, $Files.Count)
 
     Set-StepProgress `
-        -Activity "Detecting audio metadata" `
+        -Activity "Reading media metadata" `
         -Status "0/$audioTotalCount files" `
         -PercentComplete 0
 
     Set-OverallProgress `
         -Stage "AudioMetadata" `
         -PercentComplete 0 `
-        -Status "Audio metadata: 0/$audioTotalCount"
+        -Status "Media metadata: 0/$audioTotalCount"
 
     foreach ($file in $Files) {
 
@@ -2286,17 +2286,17 @@ try {
         $audioPercent = 100.0 * $audioProcessedCount / $audioTotalCount
 
         Set-StepProgress `
-            -Activity "Detecting audio metadata" `
+            -Activity "Reading media metadata" `
             -Status "$audioProcessedCount/$audioTotalCount files" `
             -PercentComplete $audioPercent
 
         Set-OverallProgress `
             -Stage "AudioMetadata" `
             -PercentComplete $audioPercent `
-            -Status "Audio metadata: $audioProcessedCount/$audioTotalCount"
+            -Status "Media metadata: $audioProcessedCount/$audioTotalCount"
     }
 
-    Complete-StepProgress -Activity "Detecting audio metadata"
+    Complete-StepProgress -Activity "Reading media metadata"
 
     # ========================================================
     # Generate frame hashes
