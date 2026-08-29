@@ -28,6 +28,14 @@ Usage
 
 A report will be written to a file named after the merged video in the target folder.
 
+Configuration
+
+- MergeDashcam.config.psd1 is a text configuration file. Open it with any text editor to change settings.
+- Keep the configuration file in the same folder as MergeDashcam.ps1.
+- FrameRate controls the playback rate of the merged video. The default is 30 fps.
+- FrameRateWarningDifference controls when an input frame-rate warning is shown.
+- The remaining settings control parallel processing, validation, and console output.
+
 =================================
 Extract front and rear videos.bat
 =================================
