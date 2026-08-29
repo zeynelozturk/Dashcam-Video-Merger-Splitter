@@ -11,19 +11,54 @@ $ErrorActionPreference = "Stop"
 # Settings
 # ============================================================
 
-$ffmpeg  = "ffmpeg.exe"
-$ffprobe = "ffprobe.exe"
+$configPath = Join-Path $PSScriptRoot "MergeDashcam.config.psd1"
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+    throw "Configuration file not found: $configPath"
+}
 
-$MinimumMatchFrames = 5
-$FrameRate = "30"
-$FrameRateWarningDifference = 3.0
-$UseParallelFrameHashing = $true
-$ParallelFrameHashWorkers = 5
-$UseParallelAudioMetadata = $true
-$ParallelAudioMetadataWorkers = 3
-$QuickValidationSeconds = 2.0
-$MinimalConsoleOutput = $true
-$SuppressFFmpegConsoleOutput = $true
+$config = Import-PowerShellDataFile -LiteralPath $configPath
+$requiredSettings = @(
+    "FFmpegPath",
+    "FFprobePath",
+    "MinimumMatchFrames",
+    "FrameRate",
+    "FrameRateWarningDifference",
+    "UseParallelFrameHashing",
+    "ParallelFrameHashWorkers",
+    "UseParallelAudioMetadata",
+    "ParallelAudioMetadataWorkers",
+    "QuickValidationSeconds",
+    "MinimalConsoleOutput",
+    "SuppressFFmpegConsoleOutput"
+)
+
+foreach ($settingName in $requiredSettings) {
+    if (-not $config.ContainsKey($settingName)) {
+        throw "Missing setting '$settingName' in: $configPath"
+    }
+}
+
+$ffmpeg = [string]$config.FFmpegPath
+$ffprobe = [string]$config.FFprobePath
+$MinimumMatchFrames = [int]$config.MinimumMatchFrames
+$FrameRateValue = [double]$config.FrameRate
+$FrameRateWarningDifference = [double]$config.FrameRateWarningDifference
+$UseParallelFrameHashing = [bool]$config.UseParallelFrameHashing
+$ParallelFrameHashWorkers = [int]$config.ParallelFrameHashWorkers
+$UseParallelAudioMetadata = [bool]$config.UseParallelAudioMetadata
+$ParallelAudioMetadataWorkers = [int]$config.ParallelAudioMetadataWorkers
+$QuickValidationSeconds = [double]$config.QuickValidationSeconds
+$MinimalConsoleOutput = [bool]$config.MinimalConsoleOutput
+$SuppressFFmpegConsoleOutput = [bool]$config.SuppressFFmpegConsoleOutput
+
+if ($FrameRateValue -le 0) {
+    throw "FrameRate must be greater than zero in: $configPath"
+}
+
+$FrameRate = $FrameRateValue.ToString(
+    "0.######",
+    [Globalization.CultureInfo]::InvariantCulture
+)
 
 # ============================================================
 # Helpers
@@ -1390,7 +1425,7 @@ param(
     [int]$FrameCount
 )
 
-return $FrameCount / [double]$FrameRate
+return $FrameCount / $FrameRateValue
 }
 
 function Convert-DraggedFileList {
@@ -1777,7 +1812,7 @@ try {
     $detectedFrameRate = Get-DetectedVideoFrameRate $Files[0]
     if (
         $null -ne $detectedFrameRate -and
-        [Math]::Abs($detectedFrameRate - [double]$FrameRate) -gt
+        [Math]::Abs($detectedFrameRate - $FrameRateValue) -gt
             $FrameRateWarningDifference
     ) {
         $detectedFrameRateText = $detectedFrameRate.ToString(
@@ -1790,7 +1825,7 @@ try {
         Write-Host "The merger is configured to use $FrameRate fps."
         Write-Host (
             "If $detectedFrameRateText fps is the video's real frame rate, " +
-            'update $FrameRate near the top of MergeDashcam.ps1.'
+            "update FrameRate in MergeDashcam.config.psd1."
         )
         Write-Host "Some damaged or incorrectly muxed files report the wrong rate."
 
