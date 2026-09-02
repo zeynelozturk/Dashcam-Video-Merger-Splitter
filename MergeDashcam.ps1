@@ -488,6 +488,68 @@ function Read-HostWithSpacing {
     return Read-Host $Prompt
 }
 
+function Wait-ForUserExit {
+    param(
+        [string]$Prompt = "Press Enter to finish."
+    )
+
+    try {
+        [void](Read-HostWithSpacing $Prompt)
+    }
+    catch {
+    }
+}
+
+function Resolve-ExecutablePath {
+    param(
+        [string]$ConfiguredPath,
+        [string]$ToolLabel,
+        [string]$ConfigSettingName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        throw "$ConfigSettingName cannot be empty in: $configPath"
+    }
+
+    $candidate = [string]$ConfiguredPath
+    $appearsPathLike = (
+        $candidate.IndexOf("\\") -ge 0 -or
+        $candidate.IndexOf("/") -ge 0 -or
+        $candidate.IndexOf(":") -ge 0
+    )
+
+    if ($appearsPathLike) {
+        if (-not [IO.Path]::IsPathRooted($candidate)) {
+            $candidate = Join-Path $PSScriptRoot $candidate
+        }
+
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw (
+                "$ToolLabel was not found at configured path '$ConfiguredPath'. " +
+                "Update $ConfigSettingName in MergeDashcam.config.psd1."
+            )
+        }
+
+        return (Resolve-Path -LiteralPath $candidate).Path
+    }
+
+    $resolvedCommand = Get-Command `
+        -Name $candidate `
+        -CommandType Application `
+        -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+    if ($null -eq $resolvedCommand) {
+        throw (
+            "$ToolLabel executable '$ConfiguredPath' was not found in PATH. " +
+            "Install $ToolLabel or set $ConfigSettingName to the full executable path " +
+            "in MergeDashcam.config.psd1."
+        )
+    }
+
+    return [string]$resolvedCommand.Source
+}
+
 function Format-ByteSize {
     param(
         [double]$Bytes
@@ -507,6 +569,26 @@ function Format-ByteSize {
         " " +
         $units[$unitIndex]
     )
+}
+
+try {
+    $ffmpeg = Resolve-ExecutablePath `
+        -ConfiguredPath $ffmpeg `
+        -ToolLabel "FFmpeg" `
+        -ConfigSettingName "FFmpegPath"
+
+    $ffprobe = Resolve-ExecutablePath `
+        -ConfiguredPath $ffprobe `
+        -ToolLabel "FFprobe" `
+        -ConfigSettingName "FFprobePath"
+}
+catch {
+    Write-Host ""
+    Write-Host "FAILED:"
+    Write-Host $_.Exception.Message
+
+    Wait-ForUserExit "Press Enter to close."
+    exit 1
 }
 
 function Get-DriveSpaceSnapshot {
@@ -4635,6 +4717,6 @@ finally {
     }
 
     if (-not $mergeSucceeded) {
-        pause
+        Wait-ForUserExit "Press Enter to close."
     }
 }
