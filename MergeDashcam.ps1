@@ -2445,6 +2445,8 @@ function Select-OutputDirectory {
     Write-Host "[2] Same folder as videos"
     Write-Host "[3] Browse..."
 
+    $persistAsLastOutputDirectory = $true
+
     while ($true) {
         $choice = Read-Host "Select [1/2/3] (press Enter for 1)"
 
@@ -2461,6 +2463,7 @@ function Select-OutputDirectory {
 
         if ($choice -eq "2") {
             $selectedDirectory = $SourceDirectory
+            $persistAsLastOutputDirectory = $false
             break
         }
 
@@ -2494,15 +2497,17 @@ function Select-OutputDirectory {
 
     $selectedDirectory = [IO.Path]::GetFullPath($selectedDirectory)
 
-    try {
-        New-Item -Path $registryPath -Force | Out-Null
-        Set-ItemProperty `
-            -Path $registryPath `
-            -Name LastOutputDirectory `
-            -Value $selectedDirectory
-    }
-    catch {
-        Write-Host "Could not save the last output folder."
+    if ($persistAsLastOutputDirectory) {
+        try {
+            New-Item -Path $registryPath -Force | Out-Null
+            Set-ItemProperty `
+                -Path $registryPath `
+                -Name LastOutputDirectory `
+                -Value $selectedDirectory
+        }
+        catch {
+            Write-Host "Could not save the last output folder."
+        }
     }
 
     return $selectedDirectory
