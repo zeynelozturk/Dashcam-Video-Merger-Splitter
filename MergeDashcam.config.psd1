@@ -1,4 +1,12 @@
 @{
+    # FFmpeg/FFprobe resolution order:
+    # 1) Always check local .\ffmpeg\ffmpeg.exe and .\ffmpeg\ffprobe.exe first.
+    # 2) If local files are missing, use FFmpegPath/FFprobePath below (fallback).
+    #
+    # FFmpegPath/FFprobePath examples:
+    # - Local bundled files next to script: .\ffmpeg\ffmpeg.exe and .\ffmpeg\ffprobe.exe
+    # - PATH lookup: ffmpeg.exe and ffprobe.exe
+    # - Absolute paths: C:\Tools\ffmpeg\bin\ffmpeg.exe and C:\Tools\ffmpeg\bin\ffprobe.exe
     FFmpegPath                   = "ffmpeg.exe"
     FFprobePath                  = "ffprobe.exe"
     MinimumMatchFrames           = 5
