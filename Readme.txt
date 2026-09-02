@@ -18,12 +18,14 @@ Features
 - Provides an option to exclude audio.
 - Handles files without audio.
 - Checks free space before processing and refuses to continue when there is not enough space on the output drive or on the temp drive (usually C:).
+- Sorts by parsed filename timestamp when available (using RecordingFilePrefix/EventFilePrefix patterns from config). If parsing is only partial, you can keep parsed order for recognized files and choose fallback sorting for unrecognized files, or switch fully to filename/date fallback.
 
 Usage
 
 - Either drag files onto the .bat file, or open the .bat file and drag files into its command window. At least two files are required.
 - After the initial files are sorted, you may add event videos by dragging them into the command window. Press Enter without dragging to skip.
 - Audio inclusion will then be asked.
+- Input order is decided before processing: parse-first sort, otherwise one-time fallback choice (filename or modified date).
 - The destination choices are the last folder (default), the folder containing the videos, or Browse. The last selected folder is remembered for the next job.
 - After selecting destination, a storage pre-check runs and merge stops if output or temp free space is insufficient.
 - Press Enter at the audio question to include audio.
