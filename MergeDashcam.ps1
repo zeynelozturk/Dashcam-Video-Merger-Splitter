@@ -479,6 +479,15 @@ function Write-InfoBlank {
     Write-Host ""
 }
 
+function Read-HostWithSpacing {
+    param(
+        [string]$Prompt
+    )
+
+    Write-Host ""
+    return Read-Host $Prompt
+}
+
 function Format-ByteSize {
     param(
         [double]$Bytes
@@ -2391,7 +2400,7 @@ function Get-SortedInputFileInfos {
             $useFallbackForAll = $false
             if ($AllowFallbackPrompt) {
                 while ($true) {
-                    $behaviorChoice = Read-Host "Select [1/2] (press Enter for 1)"
+                    $behaviorChoice = Read-HostWithSpacing "Select [1/2] (press Enter for 1)"
 
                     if ([string]::IsNullOrWhiteSpace($behaviorChoice) -or
                         $behaviorChoice -eq "1") {
@@ -2418,7 +2427,7 @@ function Get-SortedInputFileInfos {
                 if ([string]::IsNullOrWhiteSpace($script:FallbackSortMode)) {
                     if ($AllowFallbackPrompt) {
                         while ($true) {
-                            $choice = Read-Host "Select [1/2] (press Enter for 1)"
+                            $choice = Read-HostWithSpacing "Select [1/2] (press Enter for 1)"
 
                             if ([string]::IsNullOrWhiteSpace($choice) -or $choice -eq "1") {
                                 $script:FallbackSortMode = "Filename"
@@ -2488,7 +2497,7 @@ function Get-SortedInputFileInfos {
                 if ([string]::IsNullOrWhiteSpace($script:FallbackSortMode)) {
                     if ($AllowFallbackPrompt) {
                         while ($true) {
-                            $choice = Read-Host "Select [1/2] (press Enter for 1)"
+                            $choice = Read-HostWithSpacing "Select [1/2] (press Enter for 1)"
 
                             if ([string]::IsNullOrWhiteSpace($choice) -or $choice -eq "1") {
                                 $script:FallbackSortMode = "Filename"
@@ -2540,7 +2549,7 @@ function Get-SortedInputFileInfos {
 
             if ([string]::IsNullOrWhiteSpace($script:FallbackSortMode)) {
                 while ($true) {
-                    $choice = Read-Host "Select [1/2] (press Enter for 1)"
+                    $choice = Read-HostWithSpacing "Select [1/2] (press Enter for 1)"
 
                     if ([string]::IsNullOrWhiteSpace($choice) -or $choice -eq "1") {
                         $script:FallbackSortMode = "Filename"
@@ -2651,7 +2660,7 @@ function Select-OutputDirectory {
     $persistAsLastOutputDirectory = $true
 
     while ($true) {
-        $choice = Read-Host "Select [1/2/3] (press Enter for 1)"
+        $choice = Read-HostWithSpacing "Select [1/2/3] (press Enter for 1)"
 
         if ([string]::IsNullOrWhiteSpace($choice) -or $choice -eq "1") {
             if ($lastDirectoryIsValid) {
@@ -2734,7 +2743,7 @@ while ($null -eq $primaryInputResolution) {
         Write-Host "- Drag at least two files"
         Write-Host "Do not mix folders and files in the same selection."
 
-        $draggedText = Read-Host "Input"
+        $draggedText = Read-HostWithSpacing "Input"
         if ([string]::IsNullOrWhiteSpace($draggedText)) {
             continue
         }
@@ -2796,7 +2805,7 @@ $Files = @(
         }
 )
 
-$additionalText = Read-Host (
+$additionalText = Read-HostWithSpacing (
     "Do you want to add additional files (like event videos)? " +
     "Drag files here and press Enter, or press Enter to skip " +
     "(folders are not accepted here)"
@@ -2862,7 +2871,7 @@ foreach ($file in $Files) {
 
 if (-not $ExcludeAudio) {
     while ($true) {
-        $audioChoice = Read-Host "Include audio? (Y/n, press Enter for Y)"
+        $audioChoice = Read-HostWithSpacing "Include audio? (Y/n, press Enter for Y)"
 
         if ([string]::IsNullOrWhiteSpace($audioChoice)) {
             break
@@ -3052,7 +3061,7 @@ try {
 
         $continueWithSkips = $false
         while ($true) {
-            $answer = Read-Host "Continue by skipping failed files? [Y/N]"
+            $answer = Read-HostWithSpacing "Continue by skipping failed files? [Y/N]"
             if ([string]::IsNullOrWhiteSpace($answer)) {
                 continue
             }
@@ -3115,7 +3124,7 @@ try {
         )
 
         while ($true) {
-            $answer = Read-Host "Continue using $FrameRate fps anyway? [Y/N]"
+            $answer = Read-HostWithSpacing "Continue using $FrameRate fps anyway? [Y/N]"
             if ([string]::IsNullOrWhiteSpace($answer)) {
                 continue
             }
