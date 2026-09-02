@@ -2786,12 +2786,6 @@ $OutputDirectory = Select-OutputDirectory (
     Split-Path $Files[0] -Parent
 )
 
-Assert-MergeFreeSpace `
-    -InputFiles $Files `
-    -OutputDirectory $OutputDirectory `
-    -TempDirectory $env:TEMP `
-    -IncludeAudio (-not $ExcludeAudio)
-
 Set-OverallProgress `
     -Stage "Setup" `
     -PercentComplete 100 `
@@ -2841,6 +2835,12 @@ foreach ($file in $Files) {
 $report.Add("")
 
 try {
+
+    Assert-MergeFreeSpace `
+        -InputFiles $Files `
+        -OutputDirectory $OutputDirectory `
+        -TempDirectory $env:TEMP `
+        -IncludeAudio (-not $ExcludeAudio)
 
     Set-StepProgress `
         -Activity "Starting merge" `
