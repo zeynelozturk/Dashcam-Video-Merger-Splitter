@@ -634,7 +634,148 @@ function Assert-MergeFreeSpace {
         -IncludeAudio $IncludeAudio
 
     $targetDrive = Get-DriveSpaceSnapshot -Path $OutputDirectory
-    $tempDrive = Get-DriveSpaceSnapshot -Path $TempDirectory
+    $preferredTempFullPath = [IO.Path]::GetFullPath($TempDirectory)
+    $preferredTempDrive = Get-DriveSpaceSnapshot -Path $preferredTempFullPath
+
+    $tempCandidates =
+        New-Object System.Collections.Generic.List[object]
+
+    [void]$tempCandidates.Add(
+        [PSCustomObject]@{
+            Root = $preferredTempDrive.Root
+            FreeBytes = $preferredTempDrive.FreeBytes
+            TempBaseDirectory = $preferredTempFullPath
+            IsPreferred = $true
+        }
+    )
+
+    $fixedDrives = @(
+        [System.IO.DriveInfo]::GetDrives() |
+            Where-Object {
+                $_.IsReady -and
+                $_.DriveType -eq [System.IO.DriveType]::Fixed
+            }
+    )
+
+    foreach ($drive in $fixedDrives) {
+        $candidateRoot = $drive.Name.TrimEnd('\\')
+        if ($candidateRoot -eq $preferredTempDrive.Root) {
+            continue
+        }
+
+        [void]$tempCandidates.Add(
+            [PSCustomObject]@{
+                Root = $candidateRoot
+                FreeBytes = [int64]$drive.AvailableFreeSpace
+                TempBaseDirectory = Join-Path $drive.Name "DashcamVideoMergerTemp"
+                IsPreferred = $false
+            }
+        )
+    }
+
+    $attemptLines =
+        New-Object System.Collections.Generic.List[string]
+
+    $selectedCandidate = $null
+    $outputError = $null
+
+    foreach ($candidate in $tempCandidates) {
+        $requiredTempOnThisDrive = [int64]$estimate.RequiredTempBytes
+
+        if ($candidate.Root -eq $targetDrive.Root) {
+            $requiredTempOnThisDrive += [int64]$estimate.RequiredTargetBytes
+        }
+
+        $outputRequirementMet = $true
+        if ($candidate.Root -ne $targetDrive.Root) {
+            $outputRequirementMet = (
+                $targetDrive.FreeBytes -ge $estimate.RequiredTargetBytes
+            )
+        }
+
+        $tempRequirementMet = (
+            $candidate.FreeBytes -ge $requiredTempOnThisDrive
+        )
+
+        $attemptLabel = $candidate.Root
+        if ($candidate.IsPreferred) {
+            $attemptLabel += " (preferred TEMP)"
+        }
+
+        [void]$attemptLines.Add(
+            "- " +
+            $attemptLabel +
+            ": need " +
+            (Format-ByteSize $requiredTempOnThisDrive) +
+            ", available " +
+            (Format-ByteSize $candidate.FreeBytes)
+        )
+
+        if ($outputRequirementMet -and $tempRequirementMet) {
+            $selectedCandidate = $candidate
+            break
+        }
+
+        if ($candidate.Root -ne $targetDrive.Root -and -not $outputRequirementMet) {
+            $outputError = (
+                "Not enough free disk space on output drive " +
+                $targetDrive.Root +
+                ". Required " +
+                (Format-ByteSize $estimate.RequiredTargetBytes) +
+                ", available " +
+                (Format-ByteSize $targetDrive.FreeBytes) +
+                "."
+            )
+        }
+    }
+
+    if ($null -eq $selectedCandidate) {
+        $messageParts =
+            New-Object System.Collections.Generic.List[string]
+
+        $outputRequirementMetGlobally = (
+            $targetDrive.FreeBytes -ge $estimate.RequiredTargetBytes
+        )
+
+        if (-not $outputRequirementMetGlobally) {
+            if (-not [string]::IsNullOrWhiteSpace($outputError)) {
+                [void]$messageParts.Add($outputError)
+            }
+            else {
+                [void]$messageParts.Add(
+                    "Not enough free disk space on output drive " +
+                    $targetDrive.Root +
+                    ". Required " +
+                    (Format-ByteSize $estimate.RequiredTargetBytes) +
+                    ", available " +
+                    (Format-ByteSize $targetDrive.FreeBytes) +
+                    "."
+                )
+            }
+        }
+        else {
+            [void]$messageParts.Add(
+                "No usable temp location was found after checking preferred TEMP " +
+                "and all ready fixed drives."
+            )
+        }
+
+        [void]$messageParts.Add(
+            "Output drive " +
+            $targetDrive.Root +
+            ": need " +
+            (Format-ByteSize $estimate.RequiredTargetBytes) +
+            ", available " +
+            (Format-ByteSize $targetDrive.FreeBytes)
+        )
+
+        [void]$messageParts.Add("Temp drive attempts:")
+        foreach ($line in $attemptLines) {
+            [void]$messageParts.Add($line)
+        }
+
+        throw ($messageParts -join [Environment]::NewLine)
+    }
 
     Write-Host ""
     Write-Host "Storage pre-check:"
@@ -659,65 +800,25 @@ function Assert-MergeFreeSpace {
     )
     Write-Host (
         "- Required free space on temp drive (" +
-        $tempDrive.Root +
+        $selectedCandidate.Root +
         "): " +
         (Format-ByteSize $estimate.RequiredTempBytes) +
         " (available " +
-        (Format-ByteSize $tempDrive.FreeBytes) +
+        (Format-ByteSize $selectedCandidate.FreeBytes) +
         ")"
     )
 
-    if ($targetDrive.Root -eq $tempDrive.Root) {
-        $combinedRequiredBytes =
-            $estimate.RequiredTargetBytes + $estimate.RequiredTempBytes
-
-        if ($targetDrive.FreeBytes -lt $combinedRequiredBytes) {
-            $missingBytes = $combinedRequiredBytes - $targetDrive.FreeBytes
-            throw (
-                "Not enough free disk space to continue. " +
-                "Output and temp folders are on the same drive (" +
-                $targetDrive.Root +
-                "). Required " +
-                (Format-ByteSize $combinedRequiredBytes) +
-                ", available " +
-                (Format-ByteSize $targetDrive.FreeBytes) +
-                ", short by " +
-                (Format-ByteSize $missingBytes) +
-                "."
-            )
-        }
-
-        return
-    }
-
-    if ($targetDrive.FreeBytes -lt $estimate.RequiredTargetBytes) {
-        $missingBytes = $estimate.RequiredTargetBytes - $targetDrive.FreeBytes
-        throw (
-            "Not enough free disk space on output drive " +
-            $targetDrive.Root +
-            ". Required " +
-            (Format-ByteSize $estimate.RequiredTargetBytes) +
-            ", available " +
-            (Format-ByteSize $targetDrive.FreeBytes) +
-            ", short by " +
-            (Format-ByteSize $missingBytes) +
-            "."
+    if (-not $selectedCandidate.IsPreferred) {
+        Write-Host (
+            "- TEMP fallback selected: " +
+            $selectedCandidate.TempBaseDirectory
         )
     }
 
-    if ($tempDrive.FreeBytes -lt $estimate.RequiredTempBytes) {
-        $missingBytes = $estimate.RequiredTempBytes - $tempDrive.FreeBytes
-        throw (
-            "Not enough free disk space on temp drive " +
-            $tempDrive.Root +
-            ". Required " +
-            (Format-ByteSize $estimate.RequiredTempBytes) +
-            ", available " +
-            (Format-ByteSize $tempDrive.FreeBytes) +
-            ", short by " +
-            (Format-ByteSize $missingBytes) +
-            "."
-        )
+    return [PSCustomObject]@{
+        SelectedTempBaseDirectory = $selectedCandidate.TempBaseDirectory
+        SelectedTempDriveRoot = $selectedCandidate.Root
+        UsedTempFallback = (-not $selectedCandidate.IsPreferred)
     }
 }
 
@@ -2808,11 +2909,7 @@ foreach ($file in $Files) {
 # Temporary directory
 # ============================================================
 
-$tempRoot = Join-Path $env:TEMP (
-    "dashcam_merge_" + [guid]::NewGuid().ToString("N")
-)
-
-New-Item -ItemType Directory -Path $tempRoot | Out-Null
+$tempRoot = $null
 
 $firstName =
     [IO.Path]::GetFileNameWithoutExtension($Files[0])
@@ -2836,11 +2933,30 @@ $report.Add("")
 
 try {
 
-    Assert-MergeFreeSpace `
+    $spacePlan = Assert-MergeFreeSpace `
         -InputFiles $Files `
         -OutputDirectory $OutputDirectory `
         -TempDirectory $env:TEMP `
         -IncludeAudio (-not $ExcludeAudio)
+
+    $tempBaseDirectory = [string]$spacePlan.SelectedTempBaseDirectory
+    if (-not (Test-Path -LiteralPath $tempBaseDirectory -PathType Container)) {
+        New-Item -ItemType Directory -Path $tempBaseDirectory -Force | Out-Null
+    }
+
+    $tempRoot = Join-Path $tempBaseDirectory (
+        "dashcam_merge_" + [guid]::NewGuid().ToString("N")
+    )
+
+    New-Item -ItemType Directory -Path $tempRoot | Out-Null
+
+    if ([bool]$spacePlan.UsedTempFallback) {
+        $report.Add("")
+        $report.Add("TEMP fallback selected: $tempBaseDirectory")
+    }
+
+    Write-Host ""
+    Write-Host "Merging in progress..."
 
     Set-StepProgress `
         -Activity "Starting merge" `
@@ -4478,11 +4594,13 @@ finally {
 
     Complete-AllProgress
 
-    Remove-Item `
-        -LiteralPath $tempRoot `
-        -Recurse `
-        -Force `
-        -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace([string]$tempRoot)) {
+        Remove-Item `
+            -LiteralPath $tempRoot `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
 
     if (-not $mergeSucceeded) {
         pause

@@ -18,6 +18,7 @@ Features
 - Provides an option to exclude audio.
 - Handles files without audio.
 - Checks free space before processing and refuses to continue when there is not enough space on the output drive or on the temp drive (usually C:).
+- If the default TEMP location does not have enough free space, the script automatically tries other ready internal fixed drives for temp work files before failing.
 - Sorts by parsed filename timestamp when available (using RecordingFilePrefix/EventFilePrefix patterns from config). If parsing is only partial, you can keep parsed order for recognized files and choose fallback sorting for unrecognized files, or switch fully to filename/date fallback.
 - Initial input accepts either one folder or multiple files (no folder/file mixing). Folder mode scans only top-level supported video files (.avi, .mp4, .mov, .mkv).
 
