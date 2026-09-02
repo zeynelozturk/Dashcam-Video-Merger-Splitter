@@ -2919,6 +2919,8 @@ foreach ($file in $Files) {
 # ============================================================
 
 $tempRoot = $null
+$tempBaseDirectory = $null
+$usedTempFallback = $false
 
 $firstName =
     [IO.Path]::GetFileNameWithoutExtension($Files[0])
@@ -2949,6 +2951,8 @@ try {
         -IncludeAudio (-not $ExcludeAudio)
 
     $tempBaseDirectory = [string]$spacePlan.SelectedTempBaseDirectory
+    $usedTempFallback = [bool]$spacePlan.UsedTempFallback
+
     if (-not (Test-Path -LiteralPath $tempBaseDirectory -PathType Container)) {
         New-Item -ItemType Directory -Path $tempBaseDirectory -Force | Out-Null
     }
@@ -2959,7 +2963,7 @@ try {
 
     New-Item -ItemType Directory -Path $tempRoot | Out-Null
 
-    if ([bool]$spacePlan.UsedTempFallback) {
+    if ($usedTempFallback) {
         $report.Add("")
         $report.Add("TEMP fallback selected: $tempBaseDirectory")
     }
@@ -4609,6 +4613,25 @@ finally {
             -Recurse `
             -Force `
             -ErrorAction SilentlyContinue
+    }
+
+    if (
+        $usedTempFallback -and
+        -not [string]::IsNullOrWhiteSpace([string]$tempBaseDirectory) -and
+        (Test-Path -LiteralPath $tempBaseDirectory -PathType Container)
+    ) {
+        try {
+            $remainingItems = @(
+                Get-ChildItem -LiteralPath $tempBaseDirectory -Force -ErrorAction Stop
+            )
+
+            if ($remainingItems.Count -eq 0) {
+                Remove-Item -LiteralPath $tempBaseDirectory -Force -ErrorAction Stop
+            }
+        }
+        catch {
+            # Best-effort cleanup only; do not fail the script if this cannot be removed.
+        }
     }
 
     if (-not $mergeSucceeded) {
