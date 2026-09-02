@@ -500,15 +500,37 @@ function Wait-ForUserExit {
     }
 }
 
+function Get-FfmpegSetupHelpText {
+    return (
+        "Supported setups: " +
+        "(1) Place ffmpeg.exe and ffprobe.exe in .\\ffmpeg\\ next to MergeDashcam.ps1, " +
+        "or (2) install both in PATH, " +
+        "or (3) set FFmpegPath and FFprobePath in MergeDashcam.config.psd1."
+    )
+}
+
 function Resolve-ExecutablePath {
     param(
         [string]$ConfiguredPath,
+        [string]$ExecutableFileName,
         [string]$ToolLabel,
         [string]$ConfigSettingName
     )
 
+    $bundledCandidate = Join-Path $PSScriptRoot (
+        Join-Path "ffmpeg" $ExecutableFileName
+    )
+
+    if (Test-Path -LiteralPath $bundledCandidate -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $bundledCandidate).Path
+    }
+
     if ([string]::IsNullOrWhiteSpace($ConfiguredPath)) {
-        throw "$ConfigSettingName cannot be empty in: $configPath"
+        throw (
+            "$ConfigSettingName cannot be empty in: $configPath" +
+            [Environment]::NewLine +
+            (Get-FfmpegSetupHelpText)
+        )
     }
 
     $candidate = [string]$ConfiguredPath
@@ -526,7 +548,9 @@ function Resolve-ExecutablePath {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             throw (
                 "$ToolLabel was not found at configured path '$ConfiguredPath'. " +
-                "Update $ConfigSettingName in MergeDashcam.config.psd1."
+                "Update $ConfigSettingName in MergeDashcam.config.psd1." +
+                [Environment]::NewLine +
+                (Get-FfmpegSetupHelpText)
             )
         }
 
@@ -543,7 +567,9 @@ function Resolve-ExecutablePath {
         throw (
             "$ToolLabel executable '$ConfiguredPath' was not found in PATH. " +
             "Install $ToolLabel or set $ConfigSettingName to the full executable path " +
-            "in MergeDashcam.config.psd1."
+            "in MergeDashcam.config.psd1." +
+            [Environment]::NewLine +
+            (Get-FfmpegSetupHelpText)
         )
     }
 
@@ -574,11 +600,13 @@ function Format-ByteSize {
 try {
     $ffmpeg = Resolve-ExecutablePath `
         -ConfiguredPath $ffmpeg `
+        -ExecutableFileName "ffmpeg.exe" `
         -ToolLabel "FFmpeg" `
         -ConfigSettingName "FFmpegPath"
 
     $ffprobe = Resolve-ExecutablePath `
         -ConfiguredPath $ffprobe `
+        -ExecutableFileName "ffprobe.exe" `
         -ToolLabel "FFprobe" `
         -ConfigSettingName "FFprobePath"
 }
