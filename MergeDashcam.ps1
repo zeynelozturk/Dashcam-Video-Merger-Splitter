@@ -2015,6 +2015,14 @@ function Convert-DraggedFileList {
         [string]$Text
     )
 
+    $trimmedText = [string]$Text
+    if (-not [string]::IsNullOrWhiteSpace($trimmedText)) {
+        $trimmedText = $trimmedText.Trim()
+        if (Test-Path -LiteralPath $trimmedText) {
+            return @($trimmedText)
+        }
+    }
+
     $paths = New-Object System.Collections.Generic.List[string]
     $pathMatches = [regex]::Matches(
         $Text,
@@ -2041,6 +2049,100 @@ function Convert-DraggedFileList {
     }
 
     return $paths.ToArray()
+}
+
+function Resolve-PrimaryInputFiles {
+    param(
+        [string[]]$InputPaths
+    )
+
+    $cleanInputPaths = @(
+        $InputPaths |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_)
+            }
+    )
+
+    if ($cleanInputPaths.Count -eq 0) {
+        throw "No input paths were provided."
+    }
+
+    $items = @(
+        $cleanInputPaths |
+            ForEach-Object {
+                Get-Item -LiteralPath ([string]$_)
+            }
+    )
+
+    $folders = @(
+        $items |
+            Where-Object {
+                $_.PSIsContainer
+            }
+    )
+
+    $files = @(
+        $items |
+            Where-Object {
+                -not $_.PSIsContainer
+            }
+    )
+
+    if ($folders.Count -gt 0 -and $files.Count -gt 0) {
+        throw (
+            "Do not mix folders and files in the initial selection. " +
+            "Select either one folder or multiple files."
+        )
+    }
+
+    if ($folders.Count -gt 1) {
+        throw "Please select only one folder."
+    }
+
+    if ($folders.Count -eq 1) {
+        $folderPath = $folders[0].FullName
+        $allowedExtensions = @(".avi", ".mp4", ".mov", ".mkv")
+
+        $videoFiles = @(
+            Get-ChildItem -LiteralPath $folderPath -File |
+                Where-Object {
+                    $allowedExtensions -contains $_.Extension.ToLowerInvariant()
+                } |
+                Sort-Object Name
+        )
+
+        if ($videoFiles.Count -lt 2) {
+            throw (
+                "The selected folder contains fewer than 2 supported video files " +
+                "(.avi, .mp4, .mov, .mkv)."
+            )
+        }
+
+        return [PSCustomObject]@{
+            Files = @($videoFiles | ForEach-Object { $_.FullName })
+            InputMode = "Folder"
+            SourceFolder = $folderPath
+            IgnoredCount = 0
+        }
+    }
+
+    $fileFullPaths = @(
+        $files |
+            ForEach-Object {
+                $_.FullName
+            }
+    )
+
+    if ($fileFullPaths.Count -lt 2) {
+        throw "At least two files are required."
+    }
+
+    return [PSCustomObject]@{
+        Files = $fileFullPaths
+        InputMode = "Files"
+        SourceFolder = (Split-Path $fileFullPaths[0] -Parent)
+        IgnoredCount = 0
+    }
 }
 
 $script:FallbackSortMode = $null
@@ -2462,7 +2564,7 @@ function Select-OutputDirectory {
         }
 
         if ($choice -eq "2") {
-            $selectedDirectory = $SourceDirectory
+            $selectedDirectory = Join-Path $SourceDirectory "Merged Videos"
             $persistAsLastOutputDirectory = $false
             break
         }
@@ -2521,32 +2623,53 @@ if ($null -eq $Files) {
     $Files = @()
 }
 
-while ($Files.Count -lt 2) {
-    Write-Host ""
-    Write-Host (
-        "Drag dashcam video files into this window, then press Enter. " +
-        "At least two files are required. Currently selected: $($Files.Count)"
-    )
+$primaryInputResolution = $null
 
-    $draggedText = Read-Host "Files"
-    if ([string]::IsNullOrWhiteSpace($draggedText)) {
-        continue
+while ($null -eq $primaryInputResolution) {
+    if ($Files.Count -eq 0) {
+        Write-Host ""
+        Write-Host "Provide initial input in one of these ways:"
+        Write-Host "- Drag one folder (top-level files only, no subfolders)"
+        Write-Host "- Drag at least two files"
+        Write-Host "Do not mix folders and files in the same selection."
+
+        $draggedText = Read-Host "Input"
+        if ([string]::IsNullOrWhiteSpace($draggedText)) {
+            continue
+        }
+
+        $Files = @(Convert-DraggedFileList $draggedText)
+        if ($Files.Count -eq 0) {
+            Write-Host "No paths were detected. Please try again."
+            continue
+        }
     }
 
-    $draggedFiles = @(Convert-DraggedFileList $draggedText)
-    if ($draggedFiles.Count -eq 0) {
-        Write-Host "No file paths were detected. Please try again."
-        continue
+    try {
+        $primaryInputResolution = Resolve-PrimaryInputFiles -InputPaths $Files
     }
-
-    $Files = @($Files) + $draggedFiles
+    catch {
+        Write-Host ""
+        Write-Host "Input selection is not valid."
+        Write-Host $_.Exception.Message
+        $Files = @()
+    }
 }
+
+$Files = @($primaryInputResolution.Files)
 
 $initialSort = Get-SortedInputFileInfos -FilePaths $Files
 $initialFiles = @($initialSort.Items)
 
 Write-Host ""
 Write-Host "Initial files after sorting:"
+if ($primaryInputResolution.InputMode -eq "Folder") {
+    Write-Host "Input mode: Folder"
+    Write-Host "Folder: $($primaryInputResolution.SourceFolder)"
+}
+else {
+    Write-Host "Input mode: Files"
+}
 Write-Host (
     "Sort mode: " +
     $initialSort.SortMode +
@@ -2574,12 +2697,37 @@ $Files = @(
 
 $additionalText = Read-Host (
     "Do you want to add additional files (like event videos)? " +
-    "Drag them here and press Enter, or press Enter to skip"
+    "Drag files here and press Enter, or press Enter to skip " +
+    "(folders are not accepted here)"
 )
 
 if (-not [string]::IsNullOrWhiteSpace($additionalText)) {
 
     $additionalFiles = Convert-DraggedFileList $additionalText
+
+    $additionalItems = @(
+        $additionalFiles |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_)
+            } |
+            ForEach-Object {
+                Get-Item -LiteralPath ([string]$_)
+            }
+    )
+
+    $additionalFolders = @(
+        $additionalItems |
+            Where-Object {
+                $_.PSIsContainer
+            }
+    )
+
+    if ($additionalFolders.Count -gt 0) {
+        throw (
+            "Additional/event input accepts files only. " +
+            "Folders are not accepted in this step."
+        )
+    }
 
     $allFilePaths = @($Files) + @($additionalFiles)
 
