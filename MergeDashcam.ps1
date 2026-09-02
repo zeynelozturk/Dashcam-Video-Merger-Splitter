@@ -479,6 +479,248 @@ function Write-InfoBlank {
     Write-Host ""
 }
 
+function Format-ByteSize {
+    param(
+        [double]$Bytes
+    )
+
+    $units = @("B", "KB", "MB", "GB", "TB", "PB")
+    $size = [Math]::Max(0.0, $Bytes)
+    $unitIndex = 0
+
+    while ($size -ge 1024.0 -and $unitIndex -lt $units.Count - 1) {
+        $size /= 1024.0
+        $unitIndex++
+    }
+
+    return (
+        $size.ToString("0.##", [Globalization.CultureInfo]::InvariantCulture) +
+        " " +
+        $units[$unitIndex]
+    )
+}
+
+function Get-DriveSpaceSnapshot {
+    param(
+        [string]$Path
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($fullPath)
+
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw "Could not determine drive root for path: $Path"
+    }
+
+    try {
+        $driveInfo = [System.IO.DriveInfo]::new($root)
+    }
+    catch {
+        throw "Could not read drive information for path: $Path"
+    }
+
+    if (-not $driveInfo.IsReady) {
+        throw "Drive is not ready for path: $Path"
+    }
+
+    return [PSCustomObject]@{
+        Root = $driveInfo.Name.TrimEnd('\\')
+        FreeBytes = [int64]$driveInfo.AvailableFreeSpace
+    }
+}
+
+function Get-MergeStorageEstimate {
+    param(
+        [string[]]$InputFiles,
+        [bool]$IncludeAudio
+    )
+
+    $totalInputBytes = [int64]0
+    $largestInputBytes = [int64]0
+    $totalDurationSeconds = 0.0
+
+    foreach ($file in $InputFiles) {
+        $item = Get-Item -LiteralPath $file
+        $fileBytes = [int64]$item.Length
+        $totalInputBytes += $fileBytes
+
+        if ($fileBytes -gt $largestInputBytes) {
+            $largestInputBytes = $fileBytes
+        }
+
+        $durationText = (
+            @(
+                Invoke-FFprobe @(
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=nw=1:nk=1",
+                    $file
+                )
+            ) -join ""
+        ).Trim()
+
+        $durationSeconds = 0.0
+        $durationParsed = [double]::TryParse(
+            $durationText,
+            [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$durationSeconds
+        )
+
+        if ($durationParsed -and $durationSeconds -gt 0) {
+            $totalDurationSeconds += $durationSeconds
+        }
+    }
+
+    $estimatedVideoBytes = [int64][Math]::Ceiling($totalInputBytes * 1.05)
+    $estimatedPcmBytes = [int64]0
+
+    if ($IncludeAudio) {
+        if ($totalDurationSeconds -gt 0) {
+            $estimatedPcmBytes = [int64][Math]::Ceiling(
+                $totalDurationSeconds * 16000.0 * 2.0
+            )
+        }
+        else {
+            # Fallback when durations cannot be probed.
+            $estimatedPcmBytes = [int64][Math]::Ceiling($totalInputBytes * 0.25)
+        }
+    }
+
+    $estimatedFinalOutputBytes = $estimatedVideoBytes
+    if ($IncludeAudio) {
+        $estimatedFinalOutputBytes += $estimatedPcmBytes
+    }
+
+    $targetPeakBytes = $estimatedFinalOutputBytes
+    if ($IncludeAudio) {
+        # Video-only AVI and final AVI coexist briefly during mux stage.
+        $targetPeakBytes += $estimatedVideoBytes
+    }
+
+    $tempPeakBytes =
+        (2 * $estimatedVideoBytes) +
+        $largestInputBytes +
+        (2 * $estimatedPcmBytes)
+
+    $safetyBufferBytes = [int64](256MB)
+    $requiredTargetBytes = [int64][Math]::Ceiling(
+        ($targetPeakBytes * 1.10) + $safetyBufferBytes
+    )
+    $requiredTempBytes = [int64][Math]::Ceiling(
+        ($tempPeakBytes * 1.10) + $safetyBufferBytes
+    )
+
+    return [PSCustomObject]@{
+        TotalInputBytes = $totalInputBytes
+        TotalDurationSeconds = $totalDurationSeconds
+        EstimatedFinalOutputBytes = $estimatedFinalOutputBytes
+        EstimatedPcmBytes = $estimatedPcmBytes
+        RequiredTargetBytes = $requiredTargetBytes
+        RequiredTempBytes = $requiredTempBytes
+    }
+}
+
+function Assert-MergeFreeSpace {
+    param(
+        [string[]]$InputFiles,
+        [string]$OutputDirectory,
+        [string]$TempDirectory,
+        [bool]$IncludeAudio
+    )
+
+    $estimate = Get-MergeStorageEstimate `
+        -InputFiles $InputFiles `
+        -IncludeAudio $IncludeAudio
+
+    $targetDrive = Get-DriveSpaceSnapshot -Path $OutputDirectory
+    $tempDrive = Get-DriveSpaceSnapshot -Path $TempDirectory
+
+    Write-Host ""
+    Write-Host "Storage pre-check:"
+    Write-Host (
+        "- Estimated final output: " +
+        (Format-ByteSize $estimate.EstimatedFinalOutputBytes)
+    )
+    if ($IncludeAudio) {
+        Write-Host (
+            "- Estimated PCM audio footprint: " +
+            (Format-ByteSize $estimate.EstimatedPcmBytes)
+        )
+    }
+    Write-Host (
+        "- Required free space on output drive (" +
+        $targetDrive.Root +
+        "): " +
+        (Format-ByteSize $estimate.RequiredTargetBytes) +
+        " (available " +
+        (Format-ByteSize $targetDrive.FreeBytes) +
+        ")"
+    )
+    Write-Host (
+        "- Required free space on temp drive (" +
+        $tempDrive.Root +
+        "): " +
+        (Format-ByteSize $estimate.RequiredTempBytes) +
+        " (available " +
+        (Format-ByteSize $tempDrive.FreeBytes) +
+        ")"
+    )
+
+    if ($targetDrive.Root -eq $tempDrive.Root) {
+        $combinedRequiredBytes =
+            $estimate.RequiredTargetBytes + $estimate.RequiredTempBytes
+
+        if ($targetDrive.FreeBytes -lt $combinedRequiredBytes) {
+            $missingBytes = $combinedRequiredBytes - $targetDrive.FreeBytes
+            throw (
+                "Not enough free disk space to continue. " +
+                "Output and temp folders are on the same drive (" +
+                $targetDrive.Root +
+                "). Required " +
+                (Format-ByteSize $combinedRequiredBytes) +
+                ", available " +
+                (Format-ByteSize $targetDrive.FreeBytes) +
+                ", short by " +
+                (Format-ByteSize $missingBytes) +
+                "."
+            )
+        }
+
+        return
+    }
+
+    if ($targetDrive.FreeBytes -lt $estimate.RequiredTargetBytes) {
+        $missingBytes = $estimate.RequiredTargetBytes - $targetDrive.FreeBytes
+        throw (
+            "Not enough free disk space on output drive " +
+            $targetDrive.Root +
+            ". Required " +
+            (Format-ByteSize $estimate.RequiredTargetBytes) +
+            ", available " +
+            (Format-ByteSize $targetDrive.FreeBytes) +
+            ", short by " +
+            (Format-ByteSize $missingBytes) +
+            "."
+        )
+    }
+
+    if ($tempDrive.FreeBytes -lt $estimate.RequiredTempBytes) {
+        $missingBytes = $estimate.RequiredTempBytes - $tempDrive.FreeBytes
+        throw (
+            "Not enough free disk space on temp drive " +
+            $tempDrive.Root +
+            ". Required " +
+            (Format-ByteSize $estimate.RequiredTempBytes) +
+            ", available " +
+            (Format-ByteSize $tempDrive.FreeBytes) +
+            ", short by " +
+            (Format-ByteSize $missingBytes) +
+            "."
+        )
+    }
+}
+
 function Join-BinaryFiles {
     param(
         [string[]]$InputFiles,
@@ -2016,6 +2258,12 @@ if (-not $ExcludeAudio) {
 $OutputDirectory = Select-OutputDirectory (
     Split-Path $Files[0] -Parent
 )
+
+Assert-MergeFreeSpace `
+    -InputFiles $Files `
+    -OutputDirectory $OutputDirectory `
+    -TempDirectory $env:TEMP `
+    -IncludeAudio (-not $ExcludeAudio)
 
 Set-OverallProgress `
     -Stage "Setup" `

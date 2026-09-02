@@ -17,6 +17,7 @@ Features
 - Includes available audio by default.
 - Provides an option to exclude audio.
 - Handles files without audio.
+- Checks free space before processing and refuses to continue when there is not enough space on the output drive or on the temp drive (usually C:).
 
 Usage
 
@@ -24,6 +25,7 @@ Usage
 - After the initial files are sorted, you may add event videos by dragging them into the command window. Press Enter without dragging to skip.
 - Audio inclusion will then be asked.
 - The destination choices are the last folder (default), the folder containing the videos, or Browse. The last selected folder is remembered for the next job.
+- After selecting destination, a storage pre-check runs and merge stops if output or temp free space is insufficient.
 - Press Enter at the audio question to include audio.
 
 A report will be written to a file named after the merged video in the target folder.
