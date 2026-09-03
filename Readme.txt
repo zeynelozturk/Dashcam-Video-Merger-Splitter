@@ -1,17 +1,19 @@
-These utilites focus on Deepfly DF10 car dashcam, but it may work with others too.
+These utilites focus on Deepfly DF10 Pro car dashcam, but it may work with others too.
 
 =================================
 Merge Dashcam videos.bat
 =================================
 
-Merges multiple dashcam videos without reencoding (mostly). This is done by comparing
-overlapping frames and reencoding tiny part.
+Merges successive dashcam videos without reencoding (mostly). This is done by comparing
+overlapping frames and reencoding a tiny part.
 
 The resulting video should have smooth playback without any skipping.
 
+
 Features
 
-- Sorts dragged files by modification date.
+- You can directly supply videos in SD card.
+- Sorts dragged files by parsed filename and if cannot, falls back to file name or modification date.
 - Detects overlapping frames using hashes and creates smooth video transitions at merge points.
 - Repairs short audio gaps by extending the final few seconds of audio without changing its pitch.
 - Includes available audio by default.
@@ -22,7 +24,10 @@ Features
 - Sorts by parsed filename timestamp when available (using RecordingFilePrefix/EventFilePrefix patterns from config). If parsing is only partial, you can keep parsed order for recognized files and choose fallback sorting for unrecognized files, or switch fully to filename/date fallback.
 - Initial input accepts either one folder or multiple files (no folder/file mixing). Folder mode scans only top-level supported video files (.avi, .mp4, .mov, .mkv).
 
+
 Usage
+
+Just follow instructions on screen. Quick overview:
 
 - Either drag files onto the .bat file, or open the .bat file and drag files into its command window. At least two files are required.
 - You may drag one folder as initial input instead of files. Subfolders are not scanned.
@@ -37,6 +42,13 @@ Usage
 
 A report will be written to a file named after the merged video in the target folder.
 
+
+Limitations
+
+- G Sensor data is not preserved.
+- Rear video channel is not preserved. It would make merged video much larger.
+
+
 Configuration
 
 - MergeDashcam.config.psd1 is a text configuration file. Open it with any text editor to change settings.
@@ -50,6 +62,7 @@ Configuration
 - AudioBoundaryRepairFadeSeconds applies a tiny edge fade to prevent clicks. Files without audio still receive silence normally.
 - The remaining settings control parallel processing, validation, and console output.
 
+
 =================================
 Extract front and rear videos.bat
 =================================
@@ -60,7 +73,3 @@ Usage
 
 - Drag file(s) to .bat file.
 - Files ending with _front.avi and _rear. avi will be written in SOURCE folder.
-
-Requirements
-
-- ffmpeg should be in PATH.
