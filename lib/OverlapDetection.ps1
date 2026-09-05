@@ -389,6 +389,10 @@ function Get-DeepflyContainedFilePlan {
         $candidateName = [IO.Path]::GetFileName($InputFiles[$index])
         $nextName = [IO.Path]::GetFileName($InputFiles[$nextIndex])
 
+        # Next file can be REC (normal loop resumes) or EVT (another event
+        # fires soon after) — either way, a fully-contained candidate is
+        # only skipped once the bypass overlap check below confirms the
+        # previous/next files reconnect cleanly on their own.
         $isDeepflyContainedCandidate = (
             $previousName.StartsWith(
                 $EventFilePrefix,
@@ -398,9 +402,15 @@ function Get-DeepflyContainedFilePlan {
                 $RecordingFilePrefix,
                 [StringComparison]::OrdinalIgnoreCase
             ) -and
-            $nextName.StartsWith(
-                $RecordingFilePrefix,
-                [StringComparison]::OrdinalIgnoreCase
+            (
+                $nextName.StartsWith(
+                    $RecordingFilePrefix,
+                    [StringComparison]::OrdinalIgnoreCase
+                ) -or
+                $nextName.StartsWith(
+                    $EventFilePrefix,
+                    [StringComparison]::OrdinalIgnoreCase
+                )
             )
         )
 
