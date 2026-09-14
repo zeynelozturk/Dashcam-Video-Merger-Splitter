@@ -31,6 +31,7 @@ Just follow instructions on screen. Quick overview:
 
 - Either drag files onto the .bat file, or open the .bat file and drag files into its command window. At least two files are required.
 - You may drag one folder as initial input instead of files. Subfolders are not scanned.
+- If you have a large number of files (roughly 300+, depending on path length), dragging them all onto the .bat can fail silently (window closes instantly) because Windows itself imposes a hard limit on how much text Explorer can pass to a program at once. Drag the containing folder instead in that case - it counts as a single item and has no such limit.
 - After the initial files are sorted, you may add event videos by dragging them into the command window. Press Enter without dragging to skip.
 - The event/additional input step accepts files only (folders are rejected in that step).
 - Audio inclusion will then be asked.

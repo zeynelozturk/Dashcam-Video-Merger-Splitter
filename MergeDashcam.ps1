@@ -2,7 +2,12 @@ param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Files,
 
-    [switch]$ExcludeAudio
+    [switch]$ExcludeAudio,
+
+    # Path to a text file with one input path per line. Used by the .bat
+    # launcher to pass large drag-and-drop selections without hitting
+    # cmd.exe's ~8191-character line length limit on %*.
+    [string]$FileListPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -142,6 +147,13 @@ catch {
 
 if ($null -eq $Files) {
     $Files = @()
+}
+
+if ($FileListPath) {
+    if (-not (Test-Path -LiteralPath $FileListPath -PathType Leaf)) {
+        throw "File list not found: $FileListPath"
+    }
+    $Files = @(Get-Content -LiteralPath $FileListPath | Where-Object { $_.Trim().Length -gt 0 })
 }
 
 $primaryInputResolution = $null
