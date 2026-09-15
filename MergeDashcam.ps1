@@ -41,7 +41,11 @@ $requiredSettings = @(
     "AudioBoundaryRepairFadeSeconds",
     "QuickValidationSeconds",
     "MinimalConsoleOutput",
-    "SuppressFFmpegConsoleOutput"
+    "SuppressFFmpegConsoleOutput",
+    "ParkedMinimumStationarySeconds",
+    "ParkDetectionScoreThreshold",
+    "ParkDetectionStartMarginSeconds",
+    "ParkDetectionEndMarginSeconds"
 )
 
 foreach ($settingName in $requiredSettings) {
@@ -73,6 +77,10 @@ $AudioBoundaryRepairFadeSeconds =
 $QuickValidationSeconds = [double]$config.QuickValidationSeconds
 $MinimalConsoleOutput = [bool]$config.MinimalConsoleOutput
 $SuppressFFmpegConsoleOutput = [bool]$config.SuppressFFmpegConsoleOutput
+$ParkedMinimumStationarySeconds = [double]$config.ParkedMinimumStationarySeconds
+$ParkDetectionScoreThreshold = [double]$config.ParkDetectionScoreThreshold
+$ParkDetectionStartMarginSeconds = [double]$config.ParkDetectionStartMarginSeconds
+$ParkDetectionEndMarginSeconds = [double]$config.ParkDetectionEndMarginSeconds
 
 if ($FrameRateValue -le 0) {
     throw "FrameRate must be greater than zero in: $configPath"
@@ -92,6 +100,22 @@ if ($AudioBoundaryRepairCompensationSeconds -lt 0) {
 
 if ($AudioBoundaryRepairFadeSeconds -lt 0) {
     throw "AudioBoundaryRepairFadeSeconds cannot be negative in: $configPath"
+}
+
+if ($ParkedMinimumStationarySeconds -le 0) {
+    throw "ParkedMinimumStationarySeconds must be greater than zero in: $configPath"
+}
+
+if ($ParkDetectionScoreThreshold -le 0) {
+    throw "ParkDetectionScoreThreshold must be greater than zero in: $configPath"
+}
+
+if ($ParkDetectionStartMarginSeconds -lt 0) {
+    throw "ParkDetectionStartMarginSeconds cannot be negative in: $configPath"
+}
+
+if ($ParkDetectionEndMarginSeconds -lt 0) {
+    throw "ParkDetectionEndMarginSeconds cannot be negative in: $configPath"
 }
 
 if ([string]::IsNullOrWhiteSpace($RecordingFilePrefix) -or
@@ -118,6 +142,12 @@ $FrameRate = $FrameRateValue.ToString(
 . (Join-Path $PSScriptRoot "lib\InputSorting.ps1")
 . (Join-Path $PSScriptRoot "lib\OutputSelection.ps1")
 . (Join-Path $PSScriptRoot "lib\AudioSegments.ps1")
+
+$script:ParkDetectionScoreThreshold = $ParkDetectionScoreThreshold
+$script:ParkDetectionStartMarginSeconds = $ParkDetectionStartMarginSeconds
+$script:ParkDetectionEndMarginSeconds = $ParkDetectionEndMarginSeconds
+
+. (Join-Path $PSScriptRoot "lib\ParkingDetection.ps1")
 
 try {
     $ffmpeg = Resolve-ExecutablePath `
@@ -313,6 +343,32 @@ if (-not $ExcludeAudio) {
 
         Write-Host "Please enter Y or N."
     }
+}
+
+$CropParkedSegments = $true
+while ($true) {
+    $parkChoice = Read-HostWithSpacing (
+        "Crop out park time (stationary for " +
+        "$([int]$ParkedMinimumStationarySeconds) seconds)? " +
+        "(Y/n, press Enter for Y)"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($parkChoice)) {
+        break
+    }
+
+    $normalizedParkChoice = $parkChoice.Trim().ToUpperInvariant()
+    if ($normalizedParkChoice -eq "Y" -or
+        $normalizedParkChoice -eq "YES") {
+        break
+    }
+    if ($normalizedParkChoice -eq "N" -or
+        $normalizedParkChoice -eq "NO") {
+        $CropParkedSegments = $false
+        break
+    }
+
+    Write-Host "Please enter Y or N."
 }
 
 $OutputDirectory = Select-OutputDirectory (
@@ -860,11 +916,181 @@ try {
     }
 
     # ========================================================
+    # Detect stationary (parked) spans
+    # ========================================================
+
+    $parkedSpansByFile = @{}
+
+    if ($CropParkedSegments) {
+
+        Write-InfoBlank
+        Write-Info "Analyzing footage for stationary (parked) segments..."
+
+        $rawParkRunsByFile = @{}
+        $parkProcessedCount = 0
+        $parkTotalCount = [Math]::Max(1, $Files.Count)
+
+        Set-StepProgress `
+            -Activity "Detecting parked segments" `
+            -Status "0/$parkTotalCount files" `
+            -PercentComplete 0
+
+        Set-OverallProgress `
+            -Stage "ParkDetection" `
+            -PercentComplete 0 `
+            -Status "Park detection: 0/$parkTotalCount"
+
+        foreach ($file in $Files) {
+
+            $rawRuns = @(Get-ParkStationaryRuns -File $file)
+            $rawParkRunsByFile[[IO.Path]::GetFullPath($file)] = $rawRuns
+
+            $parkProcessedCount++
+            $parkPercent = 100.0 * $parkProcessedCount / $parkTotalCount
+
+            Set-StepProgress `
+                -Activity "Detecting parked segments" `
+                -Status "$parkProcessedCount/$parkTotalCount files" `
+                -PercentComplete $parkPercent
+
+            Set-OverallProgress `
+                -Stage "ParkDetection" `
+                -PercentComplete $parkPercent `
+                -Status "Park detection: $parkProcessedCount/$parkTotalCount"
+        }
+
+        Complete-StepProgress -Activity "Detecting parked segments"
+
+        $parkedSpansByFile = Get-SequenceParkedSpansByFile `
+            -Files $Files `
+            -RawRunsByFile $rawParkRunsByFile `
+            -FileMetadataCache $fileMetadataCache `
+            -Hashes $hashes `
+            -OverlapCache $overlapCache `
+            -MinimumStationarySeconds $ParkedMinimumStationarySeconds
+
+        $parkedFilesCount = 0
+        $parkedSpanCount = 0
+
+        foreach ($file in $Files) {
+            $fileKey = [IO.Path]::GetFullPath($file)
+            $spans = @()
+            if ($parkedSpansByFile.ContainsKey($fileKey)) {
+                $spans = @(
+                    $parkedSpansByFile[$fileKey]
+                )
+            }
+
+            if ($spans.Count -gt 0) {
+                $parkedFilesCount++
+                $parkedSpanCount += $spans.Count
+
+                Write-Info (
+                    "Parked segment(s) found in " +
+                    "$([IO.Path]::GetFileName($file)): $($spans.Count)"
+                )
+                $report.Add(
+                    "Parked segment(s) found in " +
+                    "$([IO.Path]::GetFileName($file)): $($spans.Count) " +
+                    "(will be cropped out)"
+                )
+            }
+        }
+
+        if ($parkedSpanCount -eq 0) {
+            $report.Add("No parked segments met the configured threshold.")
+        }
+        else {
+            $report.Add(
+                "Total parked segments selected for cropping: " +
+                "$parkedSpanCount across $parkedFilesCount file(s)."
+            )
+        }
+    }
+
+    # ========================================================
     # Prepare H264 pieces
     # ========================================================
 
     $videoPieces =
         New-Object System.Collections.Generic.List[string]
+
+    # Extracts a file's contributed video range (starting at
+    # StartFrameIndex, through EOF) into one or more H.264 fragments
+    # appended to $videoPieces, cropping out any detected parked spans
+    # that fall within that range. Falls back to the caller-supplied
+    # original (uncropped) extraction when there is nothing to crop.
+    function Add-VideoPieceForRange {
+        param(
+            [string]$SourceFile,
+            [object[]]$Frames,
+            [int]$StartFrameIndex,
+            [string]$BaseName,
+            [scriptblock]$FallbackAction
+        )
+
+        $fileKey = [IO.Path]::GetFullPath($SourceFile)
+        $parkedSpans = @()
+        if ($parkedSpansByFile.ContainsKey($fileKey)) {
+            $parkedSpans = @($parkedSpansByFile[$fileKey])
+        }
+
+        if ($parkedSpans.Count -eq 0) {
+            & $FallbackAction
+            return
+        }
+
+        $keptRanges = @()
+        if ($Frames.Count -gt 0) {
+            $keptRanges = @(
+                Get-KeptFrameRanges `
+                    -Frames $Frames `
+                    -StartFrameIndex $StartFrameIndex `
+                    -ParkedSpans $parkedSpans
+            )
+        }
+
+        if ($keptRanges.Count -eq 0) {
+            Write-Info (
+                "All contributed frames were classified as parked in " +
+                "$([IO.Path]::GetFileName($SourceFile)); skipping video contribution."
+            )
+            $report.Add(
+                "All contributed frames were classified as parked in " +
+                "$([IO.Path]::GetFileName($SourceFile)); skipped."
+            )
+            return
+        }
+
+        if ($keptRanges.Count -eq 1 -and
+            $keptRanges[0].StartIndex -eq $StartFrameIndex -and
+            $keptRanges[0].EndIndex -eq $Frames.Count) {
+            & $FallbackAction
+            return
+        }
+
+        Write-Info (
+            "Cropping parked time out of " +
+            "$([IO.Path]::GetFileName($SourceFile)) " +
+            "(kept $($keptRanges.Count) segment(s))."
+        )
+        $report.Add(
+            "Cropped parked time out of " +
+            "$([IO.Path]::GetFileName($SourceFile)) " +
+            "(kept $($keptRanges.Count) segment(s))."
+        )
+
+        for ($r = 0; $r -lt $keptRanges.Count; $r++) {
+            $piece = New-CroppedVideoFragment `
+                -File $SourceFile `
+                -Frames $Frames `
+                -Range $keptRanges[$r] `
+                -TempRoot $tempRoot `
+                -BaseName ("{0}_{1:D2}" -f $BaseName, $r)
+
+            [void]$videoPieces.Add($piece)
+        }
+    }
 
     # --------------------------------------------------------
     # First video
@@ -875,18 +1101,29 @@ try {
     Write-InfoBlank
     Write-Info "Extracting first video..."
 
-    Run-FFmpeg @(
-        "-y",
-        "-i", $Files[0],
-        "-map", "0:v:0",
-        "-an",
-        "-c:v", "copy",
-        "-bsf:v", "h264_mp4toannexb",
-        "-f", "h264",
-        $firstH264
+    $firstFrames = @(
+        $fileMetadataCache[[IO.Path]::GetFullPath($Files[0])].Frames
     )
 
-    [void]$videoPieces.Add($firstH264)
+    Add-VideoPieceForRange `
+        -SourceFile $Files[0] `
+        -Frames $firstFrames `
+        -StartFrameIndex 0 `
+        -BaseName "video_000" `
+        -FallbackAction {
+            Run-FFmpeg @(
+                "-y",
+                "-i", $Files[0],
+                "-map", "0:v:0",
+                "-an",
+                "-c:v", "copy",
+                "-bsf:v", "h264_mp4toannexb",
+                "-f", "h264",
+                $firstH264
+            )
+
+            [void]$videoPieces.Add($firstH264)
+        }
 
     # ========================================================
     # Subsequent videos
@@ -916,14 +1153,17 @@ try {
         $previousHashes = $hashes[$i - 1]
         $currentHashes  = $hashes[$i]
 
-        $overlapInfo =
-            Find-OverlapWithEventFallback `
-                $Files[$i - 1] `
-                $Files[$i] `
-                $previousHashes `
-                $currentHashes
+        $overlapInfo = $overlapCache[$i]
+        if ($null -eq $overlapInfo) {
+            $overlapInfo =
+                Find-OverlapWithEventFallback `
+                    $Files[$i - 1] `
+                    $Files[$i] `
+                    $previousHashes `
+                    $currentHashes
 
-        $overlapCache[$i] = $overlapInfo
+            $overlapCache[$i] = $overlapInfo
+        }
 
         $overlap = $overlapInfo.Result
 
@@ -953,18 +1193,29 @@ try {
                 "nooverlap_{0:D3}.h264" -f $i
             )
 
-            Run-FFmpeg @(
-                "-y",
-                "-i", $Files[$i],
-                "-map", "0:v:0",
-                "-an",
-                "-c:v", "copy",
-                "-bsf:v", "h264_mp4toannexb",
-                "-f", "h264",
-                $wholeH264
+            $currentFrames = @(
+                $fileMetadataCache[[IO.Path]::GetFullPath($Files[$i])].Frames
             )
 
-            [void]$videoPieces.Add($wholeH264)
+            Add-VideoPieceForRange `
+                -SourceFile $Files[$i] `
+                -Frames $currentFrames `
+                -StartFrameIndex 0 `
+                -BaseName ("nooverlap_{0:D3}" -f $i) `
+                -FallbackAction {
+                    Run-FFmpeg @(
+                        "-y",
+                        "-i", $Files[$i],
+                        "-map", "0:v:0",
+                        "-an",
+                        "-c:v", "copy",
+                        "-bsf:v", "h264_mp4toannexb",
+                        "-f", "h264",
+                        $wholeH264
+                    )
+
+                    [void]$videoPieces.Add($wholeH264)
+                }
 
             $pairPercent = 100.0 * $i / $pairTotalCount
             Set-StepProgress `
@@ -1179,35 +1430,42 @@ try {
         Write-InfoBlank
         Write-Info "Copying original H.264 from I-frame onward..."
 
-        Run-FFmpeg @(
-            "-y",
-            "-ss",
-            $keyTime.ToString(
-                [Globalization.CultureInfo]::InvariantCulture
-            ),
-            "-i",
-            $Files[$i],
-            "-map", "0:v:0",
-            "-an",
-            "-c:v", "copy",
-            $rest
-        )
-
         $restH264 = Join-Path $tempRoot (
             "rest_{0:D3}.h264" -f $i
         )
 
-        Run-FFmpeg @(
-            "-y",
-            "-i", $rest,
-            "-an",
-            "-c:v", "copy",
-            "-bsf:v", "h264_mp4toannexb",
-            "-f", "h264",
-            $restH264
-        )
+        Add-VideoPieceForRange `
+            -SourceFile $Files[$i] `
+            -Frames $frames `
+            -StartFrameIndex $keyFrame `
+            -BaseName ("rest_{0:D3}" -f $i) `
+            -FallbackAction {
+                Run-FFmpeg @(
+                    "-y",
+                    "-ss",
+                    $keyTime.ToString(
+                        [Globalization.CultureInfo]::InvariantCulture
+                    ),
+                    "-i",
+                    $Files[$i],
+                    "-map", "0:v:0",
+                    "-an",
+                    "-c:v", "copy",
+                    $rest
+                )
 
-        [void]$videoPieces.Add($restH264)
+                Run-FFmpeg @(
+                    "-y",
+                    "-i", $rest,
+                    "-an",
+                    "-c:v", "copy",
+                    "-bsf:v", "h264_mp4toannexb",
+                    "-f", "h264",
+                    $restH264
+                )
+
+                [void]$videoPieces.Add($restH264)
+            }
 
         $pairPercent = 100.0 * $i / $pairTotalCount
         Set-StepProgress `
@@ -1350,6 +1608,81 @@ $audioParts =
 $audioBoundaryRepairs =
     New-Object System.Collections.Generic.List[object]
 
+# Creates one or more audio segments matching a file's contributed frame
+# range (starting at StartFrameIndex, through EOF), cropping out the same
+# parked spans that were cropped from the corresponding video range so
+# audio/video pieces stay paired and in sync. Falls back to the caller-
+# supplied original (uncropped) segment creation when there is nothing to
+# crop.
+function Add-AudioPieceForRange {
+    param(
+        [string]$SourceFile,
+        [object[]]$Frames,
+        [int]$StartFrameIndex,
+        [bool]$HasAudio,
+        [int]$AudioStreamIndex,
+        [string]$BaseName,
+        [scriptblock]$FallbackAction
+    )
+
+    $fileKey = [IO.Path]::GetFullPath($SourceFile)
+    $parkedSpans = @()
+    if ($parkedSpansByFile.ContainsKey($fileKey)) {
+        $parkedSpans = @($parkedSpansByFile[$fileKey])
+    }
+
+    if ($parkedSpans.Count -eq 0) {
+        & $FallbackAction
+        return
+    }
+
+    $keptRanges = @()
+    if ($Frames.Count -gt 0) {
+        $keptRanges = @(
+            Get-KeptFrameRanges `
+                -Frames $Frames `
+                -StartFrameIndex $StartFrameIndex `
+                -ParkedSpans $parkedSpans
+        )
+    }
+
+    if ($keptRanges.Count -eq 0) {
+        Write-Info (
+            "All contributed frames were classified as parked in " +
+            "$([IO.Path]::GetFileName($SourceFile)); skipping audio contribution."
+        )
+        return
+    }
+
+    if ($keptRanges.Count -eq 1 -and
+        $keptRanges[0].StartIndex -eq $StartFrameIndex -and
+        $keptRanges[0].EndIndex -eq $Frames.Count) {
+        & $FallbackAction
+        return
+    }
+
+    for ($r = 0; $r -lt $keptRanges.Count; $r++) {
+        $range = $keptRanges[$r]
+        $rangeStartTime = $Frames[$range.StartIndex].Time
+        $rangeDuration = Get-VideoDurationFromFrames (
+            $range.EndIndex - $range.StartIndex
+        )
+
+        $audioPart = Join-Path $tempRoot (
+            "{0}_{1:D2}.wav" -f $BaseName, $r
+        )
+
+        Create-AudioSegment `
+            $SourceFile `
+            $audioPart `
+            $rangeStartTime `
+            $rangeDuration `
+            $HasAudio `
+            $AudioStreamIndex
+
+        [void]$audioParts.Add($audioPart)
+    }
+}
 
 # --------------------------------------------------------
 # First video
@@ -1364,15 +1697,24 @@ $firstVideoDuration =
 $audio0 =
     Join-Path $tempRoot "audio_000.wav"
 
-Create-AudioSegment `
-    $Files[0] `
-    $audio0 `
-    0 `
-    $firstVideoDuration `
-    $audioAvailable[0] `
-    $audioStreamIndices[0]
+Add-AudioPieceForRange `
+    -SourceFile $Files[0] `
+    -Frames $firstFrames `
+    -StartFrameIndex 0 `
+    -HasAudio $audioAvailable[0] `
+    -AudioStreamIndex $audioStreamIndices[0] `
+    -BaseName "audio_000" `
+    -FallbackAction {
+        Create-AudioSegment `
+            $Files[0] `
+            $audio0 `
+            0 `
+            $firstVideoDuration `
+            $audioAvailable[0] `
+            $audioStreamIndices[0]
 
-[void]$audioParts.Add($audio0)
+        [void]$audioParts.Add($audio0)
+    }
 
 $audioProgressProcessed++
 $audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal
@@ -1464,36 +1806,33 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
     # Audio starting point
     # ----------------------------------------------------
 
+    $frameCacheKey = [IO.Path]::GetFullPath($Files[$i])
+    if (-not $fileMetadataCache.ContainsKey($frameCacheKey)) {
+        $fileMetadataCache[$frameCacheKey] =
+            Get-FileMetadata $Files[$i]
+    }
+
+    $frames =
+        @($fileMetadataCache[$frameCacheKey].Frames)
+
+    if ($firstNewFrame -ge $frames.Count) {
+        $audioProgressProcessed++
+        $audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal
+        Set-StepProgress `
+            -Activity "Finalizing audio" `
+            -Status "Preparing segments: $audioProgressProcessed/$audioProgressTotal files" `
+            -PercentComplete $audioStagePercent
+        Set-OverallProgress `
+            -Stage "AudioFinalize" `
+            -PercentComplete $audioStagePercent `
+            -Status "Audio finalize: preparing segments"
+
+        continue
+    }
+
     $audioStart = 0.0
-
     if ($firstNewFrame -gt 0) {
-
-        $frameCacheKey = [IO.Path]::GetFullPath($Files[$i])
-        if (-not $fileMetadataCache.ContainsKey($frameCacheKey)) {
-            $fileMetadataCache[$frameCacheKey] =
-                Get-FileMetadata $Files[$i]
-        }
-
-        $frames =
-            @($fileMetadataCache[$frameCacheKey].Frames)
-
-        if ($firstNewFrame -ge $frames.Count) {
-            $audioProgressProcessed++
-            $audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal
-            Set-StepProgress `
-                -Activity "Finalizing audio" `
-                -Status "Preparing segments: $audioProgressProcessed/$audioProgressTotal files" `
-                -PercentComplete $audioStagePercent
-            Set-OverallProgress `
-                -Stage "AudioFinalize" `
-                -PercentComplete $audioStagePercent `
-                -Status "Audio finalize: preparing segments"
-
-            continue
-        }
-
-        $audioStart =
-            $frames[$firstNewFrame].Time
+        $audioStart = $frames[$firstNewFrame].Time
     }
 
     $audioPart =
@@ -1501,15 +1840,24 @@ for ($i = 1; $i -lt $Files.Count; $i++) {
             "audio_{0:D3}.wav" -f $i
         )
 
-    Create-AudioSegment `
-        $Files[$i] `
-        $audioPart `
-        $audioStart `
-        $videoSegmentDuration `
-        $audioAvailable[$i] `
-        $audioStreamIndices[$i]
+    Add-AudioPieceForRange `
+        -SourceFile $Files[$i] `
+        -Frames $frames `
+        -StartFrameIndex $firstNewFrame `
+        -HasAudio $audioAvailable[$i] `
+        -AudioStreamIndex $audioStreamIndices[$i] `
+        -BaseName ("audio_{0:D3}" -f $i) `
+        -FallbackAction {
+            Create-AudioSegment `
+                $Files[$i] `
+                $audioPart `
+                $audioStart `
+                $videoSegmentDuration `
+                $audioAvailable[$i] `
+                $audioStreamIndices[$i]
 
-    [void]$audioParts.Add($audioPart)
+            [void]$audioParts.Add($audioPart)
+        }
 
     $audioProgressProcessed++
     $audioStagePercent = 70.0 * $audioProgressProcessed / $audioProgressTotal

@@ -27,4 +27,13 @@
     QuickValidationSeconds       = 2.0
     MinimalConsoleOutput         = $true
     SuppressFFmpegConsoleOutput  = $true
+    # Stationary spans lasting at least this many seconds can optionally
+    # be cropped out of the merged output (user is prompted at runtime).
+    ParkedMinimumStationarySeconds = 180
+    # Lower values are stricter (less likely to treat slow driving as parked).
+    ParkDetectionScoreThreshold   = 0.005
+    # Keep extra footage before parked spans so low-speed driving is not cut.
+    ParkDetectionStartMarginSeconds = 30.0
+    # Keep a small tail after parked spans to avoid hard boundary cuts.
+    ParkDetectionEndMarginSeconds = 5.0
 }
