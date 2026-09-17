@@ -10,6 +10,14 @@ FFmpeg and FFprobe are required. Either place ffmpeg.exe and ffprobe.exe in the
 ffmpeg folder next to the scripts, or install FFmpeg and make both executables
 available on PATH. The scripts do not include FFmpeg binaries.
 
+Disclaimer
+
+These scripts are designed to read your original dashcam files and create new output
+files; they do not intentionally modify or delete the originals. Nevertheless, keep
+backups of important recordings and use the scripts at your own risk. No guarantee is
+made that every input file will be processed successfully or that the output will be
+perfect.
+
 =================================
 Merge Dashcam videos.bat
 =================================
@@ -51,15 +59,6 @@ Just follow instructions on screen. Quick overview:
 - Press Enter at the audio question to include audio.
 
 A report will be written to a file named after the merged video in the target folder.
-
-
-Disclaimer
-
-These scripts are designed to read your original dashcam files and create new output
-files; they do not intentionally modify or delete the originals. Nevertheless, keep
-backups of important recordings and use the scripts at your own risk. No guarantee is
-made that every input file will be processed successfully or that the output will be
-perfect.
 
 
 Limitations
