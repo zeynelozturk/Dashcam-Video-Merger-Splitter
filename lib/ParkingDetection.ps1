@@ -464,8 +464,21 @@ function Get-SequenceParkedSpansByFile {
             if ($isFirst) {
                 $start += $script:ParkDetectionStartMarginSeconds
             }
+            elseif ($start -le (
+                $contribStartTimes[$node.FileIndex] + $edgeToleranceSeconds
+            )) {
+                $start = [double]$contribStartTimes[$node.FileIndex]
+            }
+
             if ($isLast) {
                 $end -= $script:ParkDetectionEndMarginSeconds
+            }
+            elseif ($end -ge (
+                $contribEndTimes[$node.FileIndex] - $edgeToleranceSeconds
+            )) {
+                # Extend beyond the final timestamp so frame-range conversion
+                # removes the last frame instead of leaving a sub-second tail.
+                $end = [double]$contribEndTimes[$node.FileIndex] + 1.0
             }
 
             if ($end -le $start) {
@@ -583,10 +596,9 @@ function Get-KeptFrameRanges {
     return $ranges.ToArray()
 }
 
-# Extracts a single frame-range sub-piece of a file's video-only stream
-# as an Annex-B H.264 fragment, matching the extraction style already
-# used elsewhere in the pipeline (copy codec, mp4toannexb bitstream
-# filter).
+# Extracts a single frame-range sub-piece as an independent Annex-B H.264
+# fragment. Cropped boundaries must be re-encoded because stream-copy seeks
+# to nearby keyframes and can leak removed footage into the output.
 function New-CroppedVideoFragment {
     param(
         [string]$File,
@@ -598,12 +610,12 @@ function New-CroppedVideoFragment {
 
     $startTime = $Frames[$Range.StartIndex].Time
 
-    $rawPiece = Join-Path $TempRoot ($BaseName + ".avi")
+    $h264Piece = Join-Path $TempRoot ($BaseName + ".h264")
 
     $ffmpegArguments = @(
         "-y",
-        "-ss", $startTime.ToString([Globalization.CultureInfo]::InvariantCulture),
         "-i", $File
+        "-ss", $startTime.ToString([Globalization.CultureInfo]::InvariantCulture)
     )
 
     if ($Range.EndIndex -lt $Frames.Count) {
@@ -617,23 +629,14 @@ function New-CroppedVideoFragment {
     $ffmpegArguments += @(
         "-map", "0:v:0",
         "-an",
-        "-c:v", "copy",
-        $rawPiece
-    )
-
-    Run-FFmpeg $ffmpegArguments
-
-    $h264Piece = Join-Path $TempRoot ($BaseName + ".h264")
-
-    Run-FFmpeg @(
-        "-y",
-        "-i", $rawPiece,
-        "-an",
-        "-c:v", "copy",
-        "-bsf:v", "h264_mp4toannexb",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "18",
         "-f", "h264",
         $h264Piece
     )
+
+    Run-FFmpeg $ffmpegArguments
 
     return $h264Piece
 }

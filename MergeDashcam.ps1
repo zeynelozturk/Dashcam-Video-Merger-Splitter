@@ -1441,40 +1441,42 @@ try {
         # ----------------------------------------------------
 
         if ($transitionFrames -gt 0) {
+            $currentFileKey = [IO.Path]::GetFullPath($Files[$i])
+            $currentParkedSpans = @()
+            if ($parkedSpansByFile.ContainsKey($currentFileKey)) {
+                $currentParkedSpans = @($parkedSpansByFile[$currentFileKey])
+            }
 
-            $transitionH264 = Join-Path $tempRoot (
-                "transition_{0:D3}.h264" -f $i
+            $transitionKeptRanges = @(
+                Get-KeptFrameRanges `
+                    -Frames $frames `
+                    -StartFrameIndex $firstNewFrame `
+                    -ParkedSpans $currentParkedSpans |
+                    Where-Object { $_.StartIndex -lt $keyFrame } |
+                    ForEach-Object {
+                        [PSCustomObject]@{
+                            StartIndex = $_.StartIndex
+                            EndIndex = [Math]::Min($_.EndIndex, $keyFrame)
+                        }
+                    } |
+                    Where-Object { $_.EndIndex -gt $_.StartIndex }
             )
 
-            $duration = $keyTime - $startTime
+            for ($transitionRangeIndex = 0;
+                 $transitionRangeIndex -lt $transitionKeptRanges.Count;
+                 $transitionRangeIndex++) {
+                $transitionPiece = New-CroppedVideoFragment `
+                    -File $Files[$i] `
+                    -Frames $frames `
+                    -Range $transitionKeptRanges[$transitionRangeIndex] `
+                    -TempRoot $tempRoot `
+                    -BaseName (
+                        "transition_{0:D3}_{1:D2}" -f
+                            $i, $transitionRangeIndex
+                    )
 
-            Write-InfoBlank
-            Write-Info (
-                "Re-encoding only " +
-                "$transitionFrames transition frames..."
-            )
-
-            Run-FFmpeg @(
-                "-y",
-                "-ss",
-                $startTime.ToString(
-                    [Globalization.CultureInfo]::InvariantCulture
-                ),
-                "-i",
-                $Files[$i],
-                "-t",
-                $duration.ToString(
-                    [Globalization.CultureInfo]::InvariantCulture
-                ),
-                "-an",
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-crf", "18",
-                "-f", "h264",
-                $transitionH264
-            )
-
-            [void]$videoPieces.Add($transitionH264)
+                [void]$videoPieces.Add($transitionPiece)
+            }
         }
 
         # ----------------------------------------------------
