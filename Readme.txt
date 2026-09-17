@@ -1,5 +1,9 @@
 These utilites focus on Deepfly DF10 Pro car dashcam, but it may work with others too.
 
+Installation
+
+Download source code ZIP file, extract to a folder, and use .bat files.
+
 =================================
 Merge Dashcam videos.bat
 =================================
@@ -8,7 +12,6 @@ Merges successive dashcam videos without reencoding (mostly). This is done by co
 overlapping frames and reencoding a tiny part.
 
 The resulting video should have smooth playback without any skipping.
-
 
 Features
 
@@ -74,3 +77,14 @@ Usage
 
 - Drag file(s) to .bat file.
 - Files ending with _front.avi and _rear. avi will be written in SOURCE folder.
+
+=================================
+Remove audio (create copy).bat
+=================================
+
+Strips audio from dashcam file, and saves it as a new file. Does not modify original file.
+
+Usage
+
+- Drag file(s) to .bat file.
+- Files with -silent suffix will be created in the SOURCE folder.
