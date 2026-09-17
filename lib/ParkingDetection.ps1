@@ -11,7 +11,16 @@
 $script:ParkDetectionSampleFps = 2.0
 if ($null -eq $script:ParkDetectionScoreThreshold -or
     $script:ParkDetectionScoreThreshold -le 0) {
-    $script:ParkDetectionScoreThreshold = 0.03
+    $script:ParkDetectionScoreThreshold = 0.01
+}
+if ($null -eq $script:ParkDetectionWindowSeconds -or
+    $script:ParkDetectionWindowSeconds -le 0) {
+    $script:ParkDetectionWindowSeconds = 60.0
+}
+if ($null -eq $script:ParkDetectionStationarySampleRatio -or
+    $script:ParkDetectionStationarySampleRatio -le 0 -or
+    $script:ParkDetectionStationarySampleRatio -gt 1) {
+    $script:ParkDetectionStationarySampleRatio = 0.65
 }
 if ($null -eq $script:ParkDetectionMotionSpikeToleranceSeconds -or
     $script:ParkDetectionMotionSpikeToleranceSeconds -lt 0) {
@@ -128,15 +137,54 @@ function Get-ParkStationaryRuns {
         }
     }
 
+    $stationarySamples = New-Object System.Collections.Generic.List[object]
+    $windowSampleCount = [Math]::Max(
+        1,
+        [int][Math]::Round(
+            $script:ParkDetectionWindowSeconds * $script:ParkDetectionSampleFps
+        )
+    )
+    $halfWindow = [int][Math]::Floor($windowSampleCount / 2)
+
+    for ($sampleIndex = 0; $sampleIndex -lt $samples.Count; $sampleIndex++) {
+        $windowStart = [Math]::Max(0, $sampleIndex - $halfWindow)
+        $windowEnd = [Math]::Min(
+            $samples.Count - 1,
+            $sampleIndex + $halfWindow
+        )
+        $lowMotionCount = 0
+
+        for ($windowIndex = $windowStart;
+             $windowIndex -le $windowEnd;
+             $windowIndex++) {
+            if ($samples[$windowIndex].Score -le
+                $script:ParkDetectionScoreThreshold) {
+                $lowMotionCount++
+            }
+        }
+
+        $observedCount = $windowEnd - $windowStart + 1
+        $lowMotionRatio = $lowMotionCount / [double]$observedCount
+        [void]$stationarySamples.Add(
+            [PSCustomObject]@{
+                Time = $samples[$sampleIndex].Time
+                IsStationary = (
+                    $lowMotionRatio -ge
+                    $script:ParkDetectionStationarySampleRatio
+                )
+            }
+        )
+    }
+
     $runs = New-Object System.Collections.Generic.List[object]
     $runStart = $null
     $lastStationaryTime = $null
     $spikeStart = $null
     $prevTime = $null
 
-    foreach ($sample in $samples) {
+    foreach ($sample in $stationarySamples) {
 
-        if ($sample.Score -le $script:ParkDetectionScoreThreshold) {
+        if ($sample.IsStationary) {
             if ($null -eq $runStart) {
                 $runStart = $sample.Time
             }

@@ -30,8 +30,12 @@
     # Stationary spans lasting at least this many seconds can optionally
     # be cropped out of the merged output (user is prompted at runtime).
     ParkedMinimumStationarySeconds = 180
-    # Lower values are stricter (less likely to treat slow driving as parked).
-    ParkDetectionScoreThreshold   = 0.03
+    # Samples below this scene score count as low motion.
+    ParkDetectionScoreThreshold   = 0.01
+    # Classify a moment as stationary only when this fraction of samples
+    # in the surrounding window are low motion. This rejects dark driving.
+    ParkDetectionWindowSeconds = 60.0
+    ParkDetectionStationarySampleRatio = 0.65
     # Brief spikes above threshold (e.g. pedestrians/headlight flicker)
     # are tolerated for this many seconds before splitting a parked run.
     ParkDetectionMotionSpikeToleranceSeconds = 4.0

@@ -44,6 +44,8 @@ $requiredSettings = @(
     "SuppressFFmpegConsoleOutput",
     "ParkedMinimumStationarySeconds",
     "ParkDetectionScoreThreshold",
+    "ParkDetectionWindowSeconds",
+    "ParkDetectionStationarySampleRatio",
     "ParkDetectionMotionSpikeToleranceSeconds",
     "ParkDetectionStartMarginSeconds",
     "ParkDetectionEndMarginSeconds"
@@ -80,6 +82,9 @@ $MinimalConsoleOutput = [bool]$config.MinimalConsoleOutput
 $SuppressFFmpegConsoleOutput = [bool]$config.SuppressFFmpegConsoleOutput
 $ParkedMinimumStationarySeconds = [double]$config.ParkedMinimumStationarySeconds
 $ParkDetectionScoreThreshold = [double]$config.ParkDetectionScoreThreshold
+$ParkDetectionWindowSeconds = [double]$config.ParkDetectionWindowSeconds
+$ParkDetectionStationarySampleRatio =
+    [double]$config.ParkDetectionStationarySampleRatio
 $ParkDetectionMotionSpikeToleranceSeconds = [double]$config.ParkDetectionMotionSpikeToleranceSeconds
 $ParkDetectionStartMarginSeconds = [double]$config.ParkDetectionStartMarginSeconds
 $ParkDetectionEndMarginSeconds = [double]$config.ParkDetectionEndMarginSeconds
@@ -110,6 +115,15 @@ if ($ParkedMinimumStationarySeconds -le 0) {
 
 if ($ParkDetectionScoreThreshold -le 0) {
     throw "ParkDetectionScoreThreshold must be greater than zero in: $configPath"
+}
+
+if ($ParkDetectionWindowSeconds -le 0) {
+    throw "ParkDetectionWindowSeconds must be greater than zero in: $configPath"
+}
+
+if ($ParkDetectionStationarySampleRatio -le 0 -or
+    $ParkDetectionStationarySampleRatio -gt 1) {
+    throw "ParkDetectionStationarySampleRatio must be greater than zero and at most one in: $configPath"
 }
 
 if ($ParkDetectionMotionSpikeToleranceSeconds -lt 0) {
@@ -150,6 +164,9 @@ $FrameRate = $FrameRateValue.ToString(
 . (Join-Path $PSScriptRoot "lib\AudioSegments.ps1")
 
 $script:ParkDetectionScoreThreshold = $ParkDetectionScoreThreshold
+$script:ParkDetectionWindowSeconds = $ParkDetectionWindowSeconds
+$script:ParkDetectionStationarySampleRatio =
+    $ParkDetectionStationarySampleRatio
 $script:ParkDetectionMotionSpikeToleranceSeconds =
     $ParkDetectionMotionSpikeToleranceSeconds
 $script:ParkDetectionStartMarginSeconds = $ParkDetectionStartMarginSeconds
@@ -1016,6 +1033,10 @@ try {
                     "Park detection diagnostics: " +
                     "threshold=" +
                     $ParkDetectionScoreThreshold.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
+                    ", window=" +
+                    $ParkDetectionWindowSeconds.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
+                    "s, stationaryRatio=" +
+                    $ParkDetectionStationarySampleRatio.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
                     ", spikeTolerance=" +
                     $ParkDetectionMotionSpikeToleranceSeconds.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
                     "s" +
