@@ -11,7 +11,11 @@
 $script:ParkDetectionSampleFps = 2.0
 if ($null -eq $script:ParkDetectionScoreThreshold -or
     $script:ParkDetectionScoreThreshold -le 0) {
-    $script:ParkDetectionScoreThreshold = 0.005
+    $script:ParkDetectionScoreThreshold = 0.03
+}
+if ($null -eq $script:ParkDetectionMotionSpikeToleranceSeconds -or
+    $script:ParkDetectionMotionSpikeToleranceSeconds -lt 0) {
+    $script:ParkDetectionMotionSpikeToleranceSeconds = 4.0
 }
 if ($null -eq $script:ParkDetectionStartMarginSeconds -or
     $script:ParkDetectionStartMarginSeconds -lt 0) {
@@ -126,6 +130,8 @@ function Get-ParkStationaryRuns {
 
     $runs = New-Object System.Collections.Generic.List[object]
     $runStart = $null
+    $lastStationaryTime = $null
+    $spikeStart = $null
     $prevTime = $null
 
     foreach ($sample in $samples) {
@@ -134,22 +140,38 @@ function Get-ParkStationaryRuns {
             if ($null -eq $runStart) {
                 $runStart = $sample.Time
             }
+
+            $lastStationaryTime = $sample.Time
+            $spikeStart = $null
         }
         else {
-            if ($null -ne $runStart -and $null -ne $prevTime) {
-                [void]$runs.Add(
-                    [PSCustomObject]@{ Start = $runStart; End = $prevTime }
-                )
-                $runStart = $null
+            if ($null -ne $runStart -and $null -ne $lastStationaryTime) {
+                if ($null -eq $spikeStart) {
+                    $spikeStart = $sample.Time
+                }
+
+                $spikeDuration = [double]$sample.Time - [double]$spikeStart
+                if ($spikeDuration -gt $script:ParkDetectionMotionSpikeToleranceSeconds) {
+                    [void]$runs.Add(
+                        [PSCustomObject]@{
+                            Start = $runStart
+                            End = $lastStationaryTime
+                        }
+                    )
+
+                    $runStart = $null
+                    $lastStationaryTime = $null
+                    $spikeStart = $null
+                }
             }
         }
 
         $prevTime = $sample.Time
     }
 
-    if ($null -ne $runStart -and $null -ne $prevTime) {
+    if ($null -ne $runStart -and $null -ne $lastStationaryTime) {
         [void]$runs.Add(
-            [PSCustomObject]@{ Start = $runStart; End = $prevTime }
+            [PSCustomObject]@{ Start = $runStart; End = $lastStationaryTime }
         )
     }
 
@@ -185,7 +207,8 @@ function Get-SequenceParkedSpansByFile {
         [hashtable]$FileMetadataCache,
         [hashtable]$Hashes,
         [hashtable]$OverlapCache,
-        [double]$MinimumStationarySeconds
+        [double]$MinimumStationarySeconds,
+        [ref]$Diagnostics = $null
     )
 
     $resultByFile = @{}
@@ -274,6 +297,9 @@ function Get-SequenceParkedSpansByFile {
         }
     }
 
+    $noOverlapBoundaryCount = 0
+    $mergedNoOverlapBoundaryCount = 0
+
     for ($i = 0; $i -lt $Files.Count - 1; $i++) {
         if ($nodeIndicesByFile[$i].Count -eq 0 -or
             $nodeIndicesByFile[$i + 1].Count -eq 0) {
@@ -281,8 +307,11 @@ function Get-SequenceParkedSpansByFile {
         }
 
         $nextOverlap = $OverlapCache[$i + 1]
-        if ($null -eq $nextOverlap -or $null -eq $nextOverlap.Result) {
-            continue
+        $hasBoundaryOverlap =
+            ($null -ne $nextOverlap -and $null -ne $nextOverlap.Result)
+
+        if (-not $hasBoundaryOverlap) {
+            $noOverlapBoundaryCount++
         }
 
         $lastNodeIndex = $nodeIndicesByFile[$i][$nodeIndicesByFile[$i].Count - 1]
@@ -295,6 +324,10 @@ function Get-SequenceParkedSpansByFile {
         }
         if ($firstNode.Start -gt ($contribStartTimes[$i + 1] + $edgeToleranceSeconds)) {
             continue
+        }
+
+        if (-not $hasBoundaryOverlap) {
+            $mergedNoOverlapBoundaryCount++
         }
 
         $oldChainId = $firstNode.ChainId
@@ -320,10 +353,44 @@ function Get-SequenceParkedSpansByFile {
         $chainDurations[$chainId] += $duration
     }
 
+    $maxChainDurationSeconds = 0.0
+    foreach ($durationValue in $chainDurations.Values) {
+        if ([double]$durationValue -gt $maxChainDurationSeconds) {
+            $maxChainDurationSeconds = [double]$durationValue
+        }
+    }
+
     $qualifiedChainIds = @(
         $chainDurations.Keys |
             Where-Object { [double]$chainDurations[$_] -ge $MinimumStationarySeconds }
     )
+
+    if ($null -ne $Diagnostics) {
+        $maxSingleRunDurationSeconds = 0.0
+        foreach ($file in $Files) {
+            $fileKey = [IO.Path]::GetFullPath($file)
+            $rawRuns = @()
+            if ($RawRunsByFile.ContainsKey($fileKey)) {
+                $rawRuns = @($RawRunsByFile[$fileKey])
+            }
+
+            foreach ($run in $rawRuns) {
+                $singleRunDuration = [double]$run.End - [double]$run.Start
+                if ($singleRunDuration -gt $maxSingleRunDurationSeconds) {
+                    $maxSingleRunDurationSeconds = $singleRunDuration
+                }
+            }
+        }
+
+        $Diagnostics.Value = [PSCustomObject]@{
+            MaxSingleRunDurationSeconds = $maxSingleRunDurationSeconds
+            MaxChainDurationSeconds = $maxChainDurationSeconds
+            NoOverlapBoundaryCount = $noOverlapBoundaryCount
+            MergedNoOverlapBoundaryCount = $mergedNoOverlapBoundaryCount
+            QualifiedChainCount = $qualifiedChainIds.Count
+            EvaluatedChainCount = $chainDurations.Count
+        }
+    }
 
     foreach ($chainId in $qualifiedChainIds) {
         $chainNodes = @(

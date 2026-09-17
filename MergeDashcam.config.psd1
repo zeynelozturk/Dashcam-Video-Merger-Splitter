@@ -31,7 +31,10 @@
     # be cropped out of the merged output (user is prompted at runtime).
     ParkedMinimumStationarySeconds = 180
     # Lower values are stricter (less likely to treat slow driving as parked).
-    ParkDetectionScoreThreshold   = 0.005
+    ParkDetectionScoreThreshold   = 0.03
+    # Brief spikes above threshold (e.g. pedestrians/headlight flicker)
+    # are tolerated for this many seconds before splitting a parked run.
+    ParkDetectionMotionSpikeToleranceSeconds = 4.0
     # Keep extra footage before parked spans so low-speed driving is not cut.
     ParkDetectionStartMarginSeconds = 30.0
     # Keep a small tail after parked spans to avoid hard boundary cuts.

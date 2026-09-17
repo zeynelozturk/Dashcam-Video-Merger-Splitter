@@ -44,6 +44,7 @@ $requiredSettings = @(
     "SuppressFFmpegConsoleOutput",
     "ParkedMinimumStationarySeconds",
     "ParkDetectionScoreThreshold",
+    "ParkDetectionMotionSpikeToleranceSeconds",
     "ParkDetectionStartMarginSeconds",
     "ParkDetectionEndMarginSeconds"
 )
@@ -79,6 +80,7 @@ $MinimalConsoleOutput = [bool]$config.MinimalConsoleOutput
 $SuppressFFmpegConsoleOutput = [bool]$config.SuppressFFmpegConsoleOutput
 $ParkedMinimumStationarySeconds = [double]$config.ParkedMinimumStationarySeconds
 $ParkDetectionScoreThreshold = [double]$config.ParkDetectionScoreThreshold
+$ParkDetectionMotionSpikeToleranceSeconds = [double]$config.ParkDetectionMotionSpikeToleranceSeconds
 $ParkDetectionStartMarginSeconds = [double]$config.ParkDetectionStartMarginSeconds
 $ParkDetectionEndMarginSeconds = [double]$config.ParkDetectionEndMarginSeconds
 
@@ -108,6 +110,10 @@ if ($ParkedMinimumStationarySeconds -le 0) {
 
 if ($ParkDetectionScoreThreshold -le 0) {
     throw "ParkDetectionScoreThreshold must be greater than zero in: $configPath"
+}
+
+if ($ParkDetectionMotionSpikeToleranceSeconds -lt 0) {
+    throw "ParkDetectionMotionSpikeToleranceSeconds cannot be negative in: $configPath"
 }
 
 if ($ParkDetectionStartMarginSeconds -lt 0) {
@@ -144,6 +150,8 @@ $FrameRate = $FrameRateValue.ToString(
 . (Join-Path $PSScriptRoot "lib\AudioSegments.ps1")
 
 $script:ParkDetectionScoreThreshold = $ParkDetectionScoreThreshold
+$script:ParkDetectionMotionSpikeToleranceSeconds =
+    $ParkDetectionMotionSpikeToleranceSeconds
 $script:ParkDetectionStartMarginSeconds = $ParkDetectionStartMarginSeconds
 $script:ParkDetectionEndMarginSeconds = $ParkDetectionEndMarginSeconds
 
@@ -961,13 +969,16 @@ try {
 
         Complete-StepProgress -Activity "Detecting parked segments"
 
+        $parkDetectionDiagnostics = $null
+
         $parkedSpansByFile = Get-SequenceParkedSpansByFile `
             -Files $Files `
             -RawRunsByFile $rawParkRunsByFile `
             -FileMetadataCache $fileMetadataCache `
             -Hashes $hashes `
             -OverlapCache $overlapCache `
-            -MinimumStationarySeconds $ParkedMinimumStationarySeconds
+            -MinimumStationarySeconds $ParkedMinimumStationarySeconds `
+            -Diagnostics ([ref]$parkDetectionDiagnostics)
 
         $parkedFilesCount = 0
         $parkedSpanCount = 0
@@ -999,6 +1010,32 @@ try {
 
         if ($parkedSpanCount -eq 0) {
             $report.Add("No parked segments met the configured threshold.")
+
+            if ($null -ne $parkDetectionDiagnostics) {
+                $report.Add(
+                    "Park detection diagnostics: " +
+                    "threshold=" +
+                    $ParkDetectionScoreThreshold.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
+                    ", spikeTolerance=" +
+                    $ParkDetectionMotionSpikeToleranceSeconds.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
+                    "s" +
+                    ", minSeconds=" +
+                    $ParkedMinimumStationarySeconds.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
+                    ", maxSingleRun=" +
+                    $parkDetectionDiagnostics.MaxSingleRunDurationSeconds.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
+                    "s, maxChain=" +
+                    $parkDetectionDiagnostics.MaxChainDurationSeconds.ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) +
+                    "s, noOverlapBoundaries=" +
+                    $parkDetectionDiagnostics.NoOverlapBoundaryCount +
+                    ", noOverlapMerged=" +
+                    $parkDetectionDiagnostics.MergedNoOverlapBoundaryCount +
+                    ", qualifiedChains=" +
+                    $parkDetectionDiagnostics.QualifiedChainCount +
+                    "/" +
+                    $parkDetectionDiagnostics.EvaluatedChainCount +
+                    "."
+                )
+            }
         }
         else {
             $report.Add(
