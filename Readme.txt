@@ -4,6 +4,12 @@ Installation
 
 Download source code ZIP file, extract to a folder, and use .bat files.
 
+FFmpeg requirement
+
+FFmpeg and FFprobe are required. Either place ffmpeg.exe and ffprobe.exe in the
+ffmpeg folder next to the scripts, or install FFmpeg and make both executables
+available on PATH. The scripts do not include FFmpeg binaries.
+
 =================================
 Merge Dashcam videos.bat
 =================================
