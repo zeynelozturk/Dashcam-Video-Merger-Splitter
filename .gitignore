@@ -1,1 +1,13 @@
 ffmpeg/
+# User media and generated output
+*.avi
+*.mp4
+*.mov
+*.mkv
+*_merged*.txt
+*_report.txt
+# Local PowerShell/editor state
+*.ps1xml
+*.user
+*.suo
+.vs/
