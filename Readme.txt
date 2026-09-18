@@ -6,9 +6,19 @@ Download source code ZIP file, extract to a folder, and use .bat files.
 
 FFmpeg requirement
 
-FFmpeg and FFprobe are required. Either place ffmpeg.exe and ffprobe.exe in the
+This project requires a full FFmpeg installation that includes both ffmpeg.exe and
+ffprobe.exe from the same build. The scripts call FFmpeg for video processing and
+FFprobe for metadata inspection, so they expect both tools to be present and
+compatible with each other. Either place ffmpeg.exe and ffprobe.exe in the
 ffmpeg folder next to the scripts, or install FFmpeg and make both executables
 available on PATH. The scripts do not include FFmpeg binaries.
+
+For Windows, a practical option is to download a static FFmpeg build that includes
+both binaries, for example from the GyanD codexffmpeg releases page:
+https://github.com/GyanD/codexffmpeg/releases/
+
+After downloading, either copy ffmpeg.exe and ffprobe.exe into the script folder's
+ffmpeg subfolder, or add the FFmpeg bin directory to PATH.
 
 Disclaimer
 
