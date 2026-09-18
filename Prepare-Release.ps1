@@ -69,6 +69,9 @@ try {
         }
     }
 
+    Get-ChildItem -LiteralPath $tempRoot -Filter "ffplay.exe" -File -Recurse |
+        Remove-Item -Force
+
     if (Test-Path -LiteralPath $OutputPath -PathType Leaf) {
         Remove-Item -LiteralPath $OutputPath -Force
     }
