@@ -6,6 +6,9 @@ ffmpeg/
 *.mkv
 *_merged*.txt
 *_report.txt
+# Release packaging output
+Dashcam-Video-Merger-and-Splitter-Release.zip
+
 # Local PowerShell/editor state
 *.ps1xml
 *.user

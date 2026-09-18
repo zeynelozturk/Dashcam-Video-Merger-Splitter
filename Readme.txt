@@ -2,7 +2,12 @@ These utilites focus on Deepfly DF10 Pro car dashcam, but it may work with other
 
 Installation
 
-Download source code ZIP file, extract to a folder, and use .bat files.
+- Download the source code ZIP file and extract it to a folder.
+- If you want a ready-to-use package, use the release ZIP; it includes FFmpeg.
+  The source code ZIP does not include FFmpeg binaries.
+- If you are using the source ZIP, download a full FFmpeg build for Windows and extract it.
+- Put ffmpeg.exe and ffprobe.exe in a subfolder named ffmpeg next to the scripts, or add the FFmpeg bin folder to PATH.
+- Run the .bat files from that extracted folder.
 
 FFmpeg requirement
 
@@ -13,12 +18,18 @@ compatible with each other. Either place ffmpeg.exe and ffprobe.exe in the
 ffmpeg folder next to the scripts, or install FFmpeg and make both executables
 available on PATH. The scripts do not include FFmpeg binaries.
 
-For Windows, a practical option is to download a static FFmpeg build that includes
-both binaries, for example from the GyanD codexffmpeg releases page:
+For Windows, a practical option is to download a full static FFmpeg build from the
+GyanD codexffmpeg releases page:
 https://github.com/GyanD/codexffmpeg/releases/
 
-After downloading, either copy ffmpeg.exe and ffprobe.exe into the script folder's
-ffmpeg subfolder, or add the FFmpeg bin directory to PATH.
+Use the archive with the "full_build" suffix, typically named something like
+ffmpeg-<version>-full_build.zip (or .7z). This is the complete build that includes
+both ffmpeg.exe and ffprobe.exe. After extracting it, either copy ffmpeg.exe and
+ffprobe.exe into the script folder's ffmpeg subfolder, or add the FFmpeg bin
+directory to PATH.
+
+"codexffmpeg" is just the GitHub mirror/support repo for Gyan's FFmpeg Windows
+builds; it hosts the actual release binaries that this project expects.
 
 Disclaimer
 
